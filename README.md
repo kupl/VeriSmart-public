@@ -1,10 +1,10 @@
 # VeriSmart
 VeriSmart is a safety verifier for Solidity smart contracts.
-A key feature of VeriSmart is the ability to automatically infer transcation invariants,
-conditions that hold under arbitrary interleaving of transcations.
-With this ability, VeriSmart can precisely analyze safety properties (e.g., integer overflow safety) in smart contracts.
+A key feature of VeriSmart is automatically inferring transcation invariants,
+conditions that hold under arbitrary interleaving of transcations, of smart contracts. 
+With this ability, VeriSmart can precisely analyze safety properties (e.g., no integer overflows) in smart contracts.
 
-VeriSmart is developed at [Software Analysis Laboratory](http://prl.korea.ac.kr/~pronto/home/) of Korea University.
+VeriSmart is developed by [Software Analysis Laboratory](http://prl.korea.ac.kr/~pronto/home/) at Korea University.
 
 ## Installation
 ### Dependencies
