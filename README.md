@@ -6,6 +6,8 @@ With this ability, VeriSmart can precisely analyze safety properties (e.g., no i
 
 VeriSmart is developed by [Software Analysis Laboratory](http://prl.korea.ac.kr/~pronto/home/) at Korea University.
 
+The benchmarks used to evaluate the effectiveness of VeriSmart in our [paper](https://www.computer.org/csdl/proceedings-article/sp/2020/349700a825/1j2LfVGEWre) are available [here](https://github.com/kupl/VeriSmart-benchmarks).
+
 ## Installation
 ### Dependencies
 - Install OCaml libraries below:
@@ -64,7 +66,7 @@ For technical details of VeriSmart, please see our papers below.
 * **VeriSmart: A Highly Precise Safety Verifier for Ethereum Smart Contracts** <br/>
   [Sunbeom So](https://sites.google.com/site/sunbeomsoprl/), Myungho Lee, Jisu Park, Heejo Lee, and [Hakjoo Oh](http://prl.korea.ac.kr/~pronto/home/) <br/>
   [S&P2020: 41st IEEE Symposium on Security and Privacy](https://www.ieee-security.org/TC/SP2020/) <br/>
-  \[[paper](https://www.computer.org/csdl/proceedings-article/sp/2020/349700a825/1j2LfVGEWre)\] \[[video abstract](https://www.youtube.com/watch?v=OIqjKqVm-F4)\]
+  \[[paper link](https://www.computer.org/csdl/proceedings-article/sp/2020/349700a825/1j2LfVGEWre)\] \[[benchmarks](https://github.com/kupl/VeriSmart-benchmarks)\] \[[video abstract](https://www.youtube.com/watch?v=OIqjKqVm-F4)\]
 
 ## Contact
 [Sunbeom So](https://sites.google.com/site/sunbeomsoprl/): sunbeom_so@korea.ac.kr
