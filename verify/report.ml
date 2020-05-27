@@ -81,13 +81,13 @@ let print : QMap.t -> unit
   print_endline ("# Alarms                 : " ^ string_of_int (List.length (get_unproven lst)));
   print_endline ("- integer over/underflow : " ^ string_of_int (List.length (get_io_unproven lst)));
   print_endline ("- division-by-zero       : " ^ string_of_int (List.length (get_dz_unproven lst)));
-  print_endline ("- assertion              : " ^ string_of_int (List.length (get_assert_proven lst)));
+  print_endline ("- assertion              : " ^ string_of_int (List.length (get_assert_unproven lst)));
 
   print_endline "";
   print_endline ("# Proven                 : " ^ string_of_int (List.length (get_proven lst)));
   print_endline ("- integer over/underflow : " ^ string_of_int (List.length (get_io_proven lst)));
   print_endline ("- division-by-zero       : " ^ string_of_int (List.length (get_dz_proven lst)));
-  print_endline ("- assertion              : " ^ string_of_int (List.length (get_assert_unproven lst)))
+  print_endline ("- assertion              : " ^ string_of_int (List.length (get_assert_proven lst)))
 
 let proved_nontrivially : (QMap.k * QMap.v) list -> int
 = fun lst ->
