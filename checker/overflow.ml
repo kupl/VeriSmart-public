@@ -9,32 +9,30 @@ let gen_safety_cond : exp -> vformula
 = fun exp ->
   match exp with
   | BinOp (bop,e1,e2,einfo) ->
-    if include_byte_exp exp then VFalse (* conservative choice *)
-    else
-      let typ = get_type_exp exp in
-      let ve1 = convert_aexp e1 in
-      let ve2 = convert_aexp e2 in
-      (match bop with
-       | Add -> VBinRel (VGeq,VBinOp (VAdd, ve1, ve2, typ),ve1)
-       | Sub -> VBinRel (VGeq,ve1,ve2)
-       | Mul ->
-         let zero = VBinRel (VEq,ve1,VInt (BatBig_int.of_int 0)) (* a=0 *) in
-         let mul = VBinOp (VMul,ve1,ve2,typ) in (* a*b *)
-         let mul_div = VBinOp (VDiv,mul,ve1,typ) in (* (a*b)/a *)
-         VOr (zero, VAnd (VNot zero, VBinRel (VEq, mul_div, ve2)))
-       | Div -> VNot (VBinRel (VEq,ve2,VInt (BatBig_int.of_int 0)))
-       | Mod -> VNot (VBinRel (VEq,ve2,VInt (BatBig_int.of_int 0)))
-       | Exponent -> (* 10**50 or 2 ** 255 *)
-         let f1 = VBinRel (VGeq,VInt (BatBig_int.of_int 10),ve1) in
-         let f2 = VBinRel (VGeq,VInt (BatBig_int.of_int 50),ve2) in
-         let f3 = VBinRel (VGeq,VInt (BatBig_int.of_int 2),ve1) in
-         let f4 = VBinRel (VGeq,VInt (BatBig_int.of_int 255),ve2) in
-         let f5 = VBinRel (VGeq,VInt (BatBig_int.of_int 256),ve1) in
-         let f6 = VBinRel (VGeq,VInt (BatBig_int.of_int 31),ve2) in
-         VOr (VAnd (f1,f2), VOr (VAnd (f3,f4), VAnd (f5,f6)))
-       | ShiftL -> VBinRel (VGeq,VBinOp (VShiftL, ve1, ve2, typ),ve1)
-       | ShiftR -> VBinRel (VGeq,ve1,VBinOp (VShiftR, ve1, ve2, typ))
-       | _ -> raise (Failure "gen_safety_cond: not related ops1"))
+    let typ = get_type_exp exp in
+    let ve1 = convert_aexp e1 in
+    let ve2 = convert_aexp e2 in
+    (match bop with
+     | Add -> VBinRel (VGeq,VBinOp (VAdd, ve1, ve2, typ),ve1)
+     | Sub -> VBinRel (VGeq,ve1,ve2)
+     | Mul ->
+       let zero = VBinRel (VEq,ve1,VInt (BatBig_int.of_int 0)) (* a=0 *) in
+       let mul = VBinOp (VMul,ve1,ve2,typ) in (* a*b *)
+       let mul_div = VBinOp (VDiv,mul,ve1,typ) in (* (a*b)/a *)
+       VOr (zero, VAnd (VNot zero, VBinRel (VEq, mul_div, ve2)))
+     | Div -> VNot (VBinRel (VEq,ve2,VInt (BatBig_int.of_int 0)))
+     | Mod -> VNot (VBinRel (VEq,ve2,VInt (BatBig_int.of_int 0)))
+     | Exponent -> (* 10**50 or 2 ** 255 *)
+       let f1 = VBinRel (VGeq,VInt (BatBig_int.of_int 10),ve1) in
+       let f2 = VBinRel (VGeq,VInt (BatBig_int.of_int 50),ve2) in
+       let f3 = VBinRel (VGeq,VInt (BatBig_int.of_int 2),ve1) in
+       let f4 = VBinRel (VGeq,VInt (BatBig_int.of_int 255),ve2) in
+       let f5 = VBinRel (VGeq,VInt (BatBig_int.of_int 256),ve1) in
+       let f6 = VBinRel (VGeq,VInt (BatBig_int.of_int 31),ve2) in
+       VOr (VAnd (f1,f2), VOr (VAnd (f3,f4), VAnd (f5,f6)))
+     | ShiftL -> VBinRel (VGeq,VBinOp (VShiftL, ve1, ve2, typ),ve1)
+     | ShiftR -> VBinRel (VGeq,ve1,VBinOp (VShiftR, ve1, ve2, typ))
+     | _ -> raise (Failure "gen_safety_cond: not related ops1"))
   | _ -> raise (Failure "gen_safety_cond: not related ops2")
     
 let gen_safety_cond_src : exp -> exp
