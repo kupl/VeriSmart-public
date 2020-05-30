@@ -23,7 +23,7 @@ module Node = struct
 
   let hash = Hashtbl.hash
 
-  let compare = Pervasives.compare
+  let compare = Stdlib.compare
 
   let entry = ENTRY
   let exit = EXIT
@@ -79,7 +79,7 @@ and stmt =
   | Assign of lv * exp * loc
   | Decl of lv
   | Seq of stmt * stmt
-  | Call of lv option * exp * exp list * loc * int 
+  | Call of lv option * exp * exp list * loc * int (* int for call-site id *) 
   | Skip
   | If of exp * stmt * stmt
   | While of exp * stmt
@@ -88,7 +88,7 @@ and stmt =
   | Return of exp option * loc
   | Throw
   | Assume of exp * loc
-  | Assert of exp * loc
+  | Assert of exp * loc (* used to check safety conditions *)
   | Assembly of (id * int) list * loc 
 
 and exp =
@@ -128,7 +128,7 @@ and loc = int
 and cinfo = {
   numid : int;
   inherit_order : int list;
-  lib_typ_lst : (id * typ) list;
+  lib_typ_lst : (id * typ) list; (* a list of pairs of (lib name, aliased type). Orders do not matter. *)
   ckind : string
 }
 
@@ -140,7 +140,7 @@ and vinfo = {
   vid : int;
   refid : int; (* referenced declartion. valid only for non-function variables *)
   storage : string; 
-  flag : bool; 
+  flag : bool; (* true if the information is propagated *)
   org : string (* original name (source code) before renamed or replaced *)
 }
 
@@ -218,7 +218,7 @@ let nodes_of : cfg -> node list
 = fun g -> G.fold_vertex (fun x acc -> x::acc) g.graph []
 
 let has_loop : cfg -> bool
-= fun g -> not (BatSet.is_empty g.lh_set)
+= fun g -> not (BatSet.is_empty g.lh_set) (* inspect whether loop headers exist *)
 
 let find_contract_id : pgm -> id -> contract
 = fun contracts id ->
@@ -271,7 +271,7 @@ let get_libnames : pgm -> id list
 let get_numid : contract -> int
 = fun (_,_,_,_,_,cinfo) -> cinfo.numid
 
-let get_fname : func -> id
+let get_fname : func -> id (* detach this function *)
 = fun (fname,_,_,_,_) -> fname
 
 let get_funcs : contract -> func list
@@ -699,7 +699,6 @@ let get_init_stmt : lv -> int -> stmt
   | Contract id -> Assign (lv, Cast (Contract id, Int BatBig_int.zero), loc)
   | Mapping2 _ -> failwith "get_init_stmt - an expression of void type should not exist."
   | Void -> failwith "get_init_stmt - an expression of void type should not exist."
-
   | _ -> Call (None, Lv (Var ("dummy_init", dummy_vinfo)), [Lv lv], loc, -1)
 
 let gvar_init = Call (None, Lv (Var ("GVar_Init", dummy_vinfo)), [], -1, -1)
@@ -713,7 +712,6 @@ let is_skip stmt =
   match stmt with
   | Skip -> true
   | _ -> false
-
 
 let get_body (_,_,_,stmt,_) = stmt
 let get_params (_,params,_,_,_) = params
@@ -848,7 +846,6 @@ let rec to_string_stmt ?(report=false) stmt =
   | Call (None, e, exps, _, _) ->
     to_string_exp ~report e ^ string_of_list ~first:"(" ~last:")" ~sep:", " (to_string_exp ~report) exps ^ ";"
   | Call (Some lv, e, exps, _, _) ->
- 
     if report && BatString.starts_with (to_string_lv lv) "Tmp" then
       to_string_lv ~report lv
     else 
@@ -1145,6 +1142,74 @@ and int_exp : exp -> BigIntSet.t
   | ETypeName _ -> BigIntSet.empty
   | _ -> failwith "int_exp: temp expressions encountered"
 
+
+let preceding_typ : typ -> typ -> typ
+= fun t1 t2 ->
+  if t1=t2 then t1
+  else
+   (match t1,t2 with
+    | EType String, ConstString -> t1
+    | EType (UInt n1), EType (UInt n2) -> EType (UInt (max n1 n2))
+    | EType (SInt n1), EType (SInt n2) -> EType (SInt (max n1 n2))
+    | EType (SInt n1), EType (UInt n2) when n1>n2 -> t1
+    | EType (SInt n1), EType (UInt n2) when n1<=n2 -> raise (Failure "preceding_typ : intX1 and uintX2 are not convertible if X1<=X2")
+    | EType (UInt n1), EType (SInt n2) when n1<n2 -> t2
+    | EType (UInt n1), EType (SInt n2) when n1>=n2 -> t1
+    | ConstInt, EType Address -> t2
+    | EType Address, ConstInt -> t1
+    | Contract s, ConstInt -> t1 
+    | EType Address, Contract s -> t1
+    | Contract s, EType Address -> t2
+    | EType Bytes _, ConstInt -> t1
+    | Array (t1,None), Array (t2, Some n) when t1=t2 -> Array (t1,None)
+    | Contract id1, Contract id2 -> t2
+    | ConstString, EType Bytes _ -> t2
+    | ConstString, EType DBytes -> t2
+    | EType Bytes _, ConstString -> t1
+    | EType DBytes, ConstString -> t1
+    | t1,t2 -> raise (Failure ("preceding_typ : " ^ (to_string_typ t1) ^ " vs. " ^ (to_string_typ t2))))
+
+(* currently, casting is performed in the vc generation step. *)
+let rec folding : exp -> exp
+= fun exp ->
+  match exp with
+  | Int n -> Int n
+  | BinOp (Add,Int n1,Int n2,einfo) -> Int (BatBig_int.add n1 n2)
+  | BinOp (Sub,Int n1,Int n2,einfo) -> Int (BatBig_int.sub n1 n2)
+  | BinOp (Mul,Int n1,Int n2,einfo) -> Int (BatBig_int.mul n1 n2)
+  | BinOp (Div,Int n1,Int n2,einfo) -> Int (BatBig_int.div n1 n2)
+  | BinOp (Mod,Int n1,Int n2,einfo) -> Int (BatBig_int.modulo n1 n2)
+  | BinOp (Exponent,Int n1,Int n2,einfo) -> Int (BatBig_int.pow n1 n2)
+  | BinOp (bop,e1,e2,einfo) -> BinOp (bop, folding e1, folding e2, einfo) 
+  | _ -> failwith "folding"
+
+let rec constant_folding : exp -> exp
+= fun exp ->
+  let exp' = folding exp in
+  if BatString.equal (to_string_exp exp) (to_string_exp exp') then exp'
+  else constant_folding exp'
+
+let common_typ : exp -> exp -> typ 
+= fun e1 e2 ->
+  let t1,t2 = get_type_exp e1, get_type_exp e2 in
+  if t1=t2 then t1 
+  else
+   (match t1,t2 with
+    | ConstInt, EType (UInt n) ->
+      let n' = bit_unsigned_of_int (get_bigint (constant_folding e1)) 8 in
+      EType (UInt (max n n'))
+    | EType (UInt n), ConstInt ->
+      let n' = bit_unsigned_of_int (get_bigint (constant_folding e2)) 8 in
+      EType (UInt (max n n'))
+    | ConstInt, EType (SInt n) ->
+      let n' = bit_signed_of_int (get_bigint (constant_folding e1)) 8 in
+      EType (SInt (max n n'))
+    | EType (SInt n), ConstInt ->
+      let n' = bit_signed_of_int (get_bigint (constant_folding e2)) 8 in
+      EType (SInt (max n n'))
+    | _ -> preceding_typ t1 t2)
+
+
 let mk_einfo : typ -> einfo
 = fun t -> {eloc=(-1); etyp=t; eid=(-1)}
 
@@ -1160,7 +1225,7 @@ let mk_finfo : contract -> finfo
 
 let mk_access : exp -> exp -> exp
 = fun e1 e2 ->
-
+  let _ = assert (is_usual_mapping (get_type_exp e1) || is_usual_allowance (get_type_exp e1)) in
   let _ = assert (is_address (get_type_exp e2)) in
   Lv (IndexAccess (e1, Some e2, range_typ (get_type_exp e1)))
 
@@ -1185,30 +1250,5 @@ let mk_or : exp -> exp -> exp
   let _ = assert (is_bool (get_type_exp e2)) in
   BinOp (LOr, e1, e2, mk_einfo (EType Bool))
 
-let preceding_typ : typ -> typ -> typ
-= fun t1 t2 ->
-  if t1=t2 then t1
-  else
-   (match t1,t2 with
-    | EType String, ConstString -> t1
-    | EType (UInt n1), EType (UInt n2) -> EType (UInt (max n1 n2))
-    | EType (SInt n1), EType (SInt n2) -> EType (SInt (max n1 n2))
-    | EType (SInt n1), EType (UInt n2) when n1>n2 -> t1
-    | EType (SInt n1), EType (UInt n2) when n1<=n2 -> raise (Failure "preceding_typ : intX1 and uintX2 are not convertible if X1<=X2")
-    | EType (UInt n1), EType (SInt n2) when n1<n2 -> t2
-    | EType (UInt n1), EType (SInt n2) when n1>=n2 -> t1
-    | ConstInt, EType Address -> t2
-    | EType Address, ConstInt -> t1
-    | Contract s, ConstInt -> t1 
-    | EType Address, Contract s -> t1
-    | Contract s, EType Address -> t2
-    | EType Bytes _, ConstInt -> t1
-    | Array (t1,None), Array (t2, Some n) when t1=t2 ->
-      Array (t1,None)
-    | Contract id1, Contract id2 ->
-      t2
-    | ConstString, EType Bytes _ -> t2
-    | ConstString, EType DBytes -> t2
-    | EType Bytes _, ConstString -> t1
-    | EType DBytes, ConstString -> t1
-    | t1,t2 -> raise (Failure ("preceding_typ : " ^ (to_string_typ t1) ^ " vs. " ^ (to_string_typ t2)))) 
+let mk_plus : exp -> exp -> exp
+= fun e1 e2 -> BinOp (Add, e1, e2, mk_einfo (common_typ e1 e2))

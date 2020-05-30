@@ -28,10 +28,10 @@ and vexp =
   | Read of vexp * vexp * typ (* A[i] *)
   | Write of vexp * vexp * vexp (* A[i] := v, return A *)
   | VBinOp of vbop * vexp * vexp * typ
-  | VUnOp of vuop * vexp * typ 
+  | VUnOp of vuop * vexp * typ
   | VCast of typ * vexp
   | VCond of vformula
-  | Ite of vexp * vexp * vexp 
+  | Ite of vexp * vexp * vexp
 
 and vid = string 
 and vbrel = VGeq | VGt | VEq
@@ -50,7 +50,7 @@ let rec compare_vf vf1 vf2 =
     let c = compare_vf f1 f2 in
     if c = 0 then compare_vf f1' f2' else c
   | VBinRel (r1,e1,e1'), VBinRel (r2,e2,e2') ->
-    let c1 = Pervasives.compare (tag_of_brel r1) (tag_of_brel r2) in
+    let c1 = Stdlib.compare (tag_of_brel r1) (tag_of_brel r2) in
     if c1 = 0 then
       let c2 = compare_ve e1 e2 in
       if c2 = 0 then compare_ve e1' e2'
@@ -61,22 +61,22 @@ let rec compare_vf vf1 vf2 =
     if c = 0 then compare_vf f1' f2' else c
   | SigmaEqual (e1,x1), SigmaEqual (e2,x2) ->
     let c = compare_ve e1 e2 in
-    if c = 0 then Pervasives.compare x1 x2 else c
-  | NoOverFlow x1, NoOverFlow x2 -> Pervasives.compare x1 x2
+    if c = 0 then Stdlib.compare x1 x2 else c
+  | NoOverFlow x1, NoOverFlow x2 -> Stdlib.compare x1 x2
   | ForAll (_,f1), ForAll (_,f2) -> compare_vf f1 f2 
-  | _ -> Pervasives.compare (tag_of_vf vf1) (tag_of_vf vf2) 
+  | _ -> Stdlib.compare (tag_of_vf vf1) (tag_of_vf vf2)
 
 and compare_ve ve1 ve2 =
   match ve1,ve2 with
   | VInt n1,VInt n2 -> BatBig_int.compare n1 n2 
   | VVar (x1,t1),VVar (x2,t2) ->
     let c = BatString.compare x1 x2 in
-    if c = 0 then Pervasives.compare t1 t2 else c
+    if c = 0 then Stdlib.compare t1 t2 else c
   | Read (e1,e1',t1), Read (e2,e2',t2) ->
     let c1 = compare_ve e1 e2 in
     if c1 = 0 then
       let c2 = compare_ve e1' e2' in
-      if c2 = 0 then Pervasives.compare t1 t2 else c2
+      if c2 = 0 then Stdlib.compare t1 t2 else c2
     else c1
   | Write (e1,e1',e1''), Write (e2,e2',e2'') ->
     let c1 = compare_ve e1 e2 in
@@ -85,22 +85,22 @@ and compare_ve ve1 ve2 =
       if c2 = 0 then compare_ve e1'' e2'' else c2
     else c1
   | VBinOp (bop1,e1,e1',t1), VBinOp (bop2,e2,e2',t2) ->
-    let c1 = Pervasives.compare (tag_of_bop bop1) (tag_of_bop bop2) in
+    let c1 = Stdlib.compare (tag_of_bop bop1) (tag_of_bop bop2) in
     if c1 = 0 then
       let c2 = compare_ve e1 e2 in
       if c2 = 0 then
         let c3 = compare_ve e1' e2' in
-        if c3 = 0 then Pervasives.compare t1 t2 else c3
+        if c3 = 0 then Stdlib.compare t1 t2 else c3
       else c2
     else c1
   | VUnOp (uop1,e1,t1), VUnOp (uop2,e2,t2) ->
-    let c1 = Pervasives.compare (tag_of_uop uop1) (tag_of_uop uop2) in
+    let c1 = Stdlib.compare (tag_of_uop uop1) (tag_of_uop uop2) in
     if c1 = 0 then
       let c2 = compare_ve e1 e2 in
-      if c2 = 0 then Pervasives.compare t1 t2 else c2
+      if c2 = 0 then Stdlib.compare t1 t2 else c2
     else c1
   | VCast (t1,e1), VCast (t2,e2) ->
-    let c = Pervasives.compare t1 t2 in
+    let c = Stdlib.compare t1 t2 in
     if c = 0 then compare_ve e1 e2 else c
   | VCond f1, VCond f2 -> compare_vf f1 f2
   | Ite (e1,e2,e3), Ite (e1',e2',e3') ->
@@ -109,7 +109,7 @@ and compare_ve ve1 ve2 =
         compare_ve e3 e3'
       else compare_ve e2 e2'
     else compare_ve e1 e1' 
-  | _ -> Pervasives.compare (tag_of_ve ve1) (tag_of_ve ve2) 
+  | _ -> Stdlib.compare (tag_of_ve ve1) (tag_of_ve ve2)
 
 and tag_of_vf = function 
   | VTrue -> 0 | VFalse -> 1 | VNot _ -> 2 | VAnd _ -> 3 | VOr _ -> 4 | VBinRel _ -> 5
@@ -433,7 +433,7 @@ let rec make_pairs : 'a list -> ('a * 'a) list
   | h1::h2::tl -> (h1,h2)::(make_pairs (h2::tl)) 
   | _ -> raise (Failure "make_pairs")
 
-
+(* assume all exps have address type *)
 let make_all_neq : (vexp * vexp) list -> vformula 
 = fun pairs ->
   List.fold_left (fun acc (e1,e2) ->
@@ -442,7 +442,7 @@ let make_all_neq : (vexp * vexp) list -> vformula
     else VAnd (acc, neq) 
   ) VTrue pairs
 
-
+(* assume all exps have address type *)
 let make_all_eq : (vexp * vexp) list -> vformula
 = fun pairs ->
   List.fold_left (fun acc (e1,e2) ->
@@ -687,10 +687,10 @@ let gen_newsym typ =
 (*** Ghost variables for analyzing Solidity ***)
 (**********************************************)
 
-let trust_map = ("@Trust", Mapping (Address, EType Bool))
+let trust_map = ("@TU", Mapping (Address, EType Bool))
 let invest_map = ("@Invest", Mapping (Address, EType (UInt 256))) (* addresses that have sent money to contracts *)
 let eth_map = ("@Eth", Mapping (Address, EType (UInt 256)))
 let this_addr = ("@thisAddr", EType Address)
 let length_map = "@L" (* length variable may have different types *)
 
-let global_ghost_var_names = ["@Trust"; "@Invest"; "@Eth"; "@thisAddr"; "@L"]
+let global_ghost_var_names = ["@TU"; "@Invest"; "@Eth"; "@thisAddr"; "@L"]

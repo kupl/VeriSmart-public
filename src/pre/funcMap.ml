@@ -1,7 +1,6 @@
 open Lang
 open Vocab
 
-
 let rec is_implicitly_convertible : typ -> typ -> bool 
 = fun my_typ comp_typ ->
   if my_typ = comp_typ then true

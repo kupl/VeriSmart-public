@@ -143,7 +143,7 @@ let rec replace_tmpexp_e : exp -> exp * stmt
     let tmpvar = gen_tmpvar einfo.etyp in (* einfo.etyp : return type of call expression *)
     let fst_arg = Lv (Var (get_name_userdef einfo.etyp,dummy_vinfo)) in
     (Lv tmpvar, Call (Some tmpvar, Lv (Var ("contract_init",dummy_vinfo)), fst_arg::params, einfo.eloc, einfo.eid))
-  | CallTemp (Lv (MemberAccess (Cast (t,e),id,id_info,typ)), params, einfo) ->
+  | CallTemp (Lv (MemberAccess (Cast (t,e),id,id_info,typ)), params, einfo) -> (* ... := cast(y).f(33) *)
     let tmpvar = gen_tmpvar t in
     (CallTemp (Lv (MemberAccess (Lv tmpvar,id,id_info,typ)), params, einfo), Assign (tmpvar, Cast (t,e), einfo.eloc))
   | CallTemp (e,params,einfo) ->
@@ -423,6 +423,7 @@ let replace_lib_calls pgm =
 (****************************************)
 (****************************************)
 
+(* e.g., https://etherscan.io/address/0x3f354b0c5c5a554fcfcb7bac6b25a104da7a9fce#code *)
 let rec add_libname_s : id -> stmt -> stmt
 = fun lib stmt ->
   match stmt with
@@ -610,7 +611,6 @@ let replace_super pgm = rs_p pgm
 (** Generate getters **)
 (**********************)
 (**********************)
-
 
 let get_public_state_vars : contract -> (id * vinfo) list
 = fun c ->
@@ -887,9 +887,8 @@ let rename_f cnames enums (fid, params, ret_params, stmt, finfo) =
 
 let rename_d decl =
   match decl with
-  | (id,None,vinfo) -> (id ^ separator ^ string_of_int vinfo.refid, None, vinfo) 
-  | (id,Some e,vinfo) ->
-    (id ^ separator ^ string_of_int vinfo.refid, Some e, vinfo)
+  | (id,None,vinfo) -> (id ^ separator ^ string_of_int vinfo.refid, None, vinfo)
+  | (id,Some e,vinfo) -> (id ^ separator ^ string_of_int vinfo.refid, Some e, vinfo)
 
 let rename_st (sname, members) =
   let members' = List.map (fun (v,vinfo) -> (v ^ separator ^ string_of_int vinfo.refid, vinfo)) members in
@@ -944,46 +943,6 @@ let extend_tuple pgm = List.map tuple_c pgm
 (** Casting **)
 (*************)
 (*************)
-
-(* currently, casting is performed in the vc generation step. *)
-let rec folding : exp -> exp
-= fun exp ->
-  match exp with
-  | Int n -> Int n
-  | BinOp (Add,Int n1,Int n2,einfo) -> Int (BatBig_int.add n1 n2)
-  | BinOp (Sub,Int n1,Int n2,einfo) -> Int (BatBig_int.sub n1 n2)
-  | BinOp (Mul,Int n1,Int n2,einfo) -> Int (BatBig_int.mul n1 n2)
-  | BinOp (Div,Int n1,Int n2,einfo) -> Int (BatBig_int.div n1 n2)
-  | BinOp (Mod,Int n1,Int n2,einfo) -> Int (BatBig_int.modulo n1 n2)
-  | BinOp (Exponent,Int n1,Int n2,einfo) -> Int (BatBig_int.pow n1 n2)
-  | BinOp (bop,e1,e2,einfo) -> BinOp (bop, folding e1, folding e2, einfo) 
-  | _ -> failwith "folding"
-
-let rec constant_folding : exp -> exp
-= fun exp ->
-  let exp' = folding exp in
-  if BatString.equal (to_string_exp exp) (to_string_exp exp') then exp'
-  else constant_folding exp'
-
-let common_typ : exp -> exp -> typ 
-= fun e1 e2 ->
-  let t1,t2 = get_type_exp e1, get_type_exp e2 in
-  if t1=t2 then t1 
-  else
-   (match t1,t2 with
-    | ConstInt, EType (UInt n) ->
-      let n' = bit_unsigned_of_int (get_bigint (constant_folding e1)) 8 in
-      EType (UInt (max n n'))
-    | EType (UInt n), ConstInt ->
-      let n' = bit_unsigned_of_int (get_bigint (constant_folding e2)) 8 in
-      EType (UInt (max n n'))
-    | ConstInt, EType (SInt n) ->
-      let n' = bit_signed_of_int (get_bigint (constant_folding e1)) 8 in
-      EType (SInt (max n n'))
-    | EType (SInt n), ConstInt ->
-      let n' = bit_signed_of_int (get_bigint (constant_folding e2)) 8 in
-      EType (SInt (max n n'))
-    | _ -> preceding_typ t1 t2)
 
 let rec cast_lv lv =
   match lv with

@@ -83,7 +83,7 @@ let remove_unreachable_funcs : pgm -> pgm
   let all = get_all_fkeys p in
   let reachable = compute_reachable_funcs cnames fmap p in
   let p' = List.map (rm_unreach_c reachable) p in
-  prerr_endline ("# all funcs : " ^ string_of_int (BatSet.cardinal all));
-  prerr_endline ("# reachable : " ^ string_of_int (BatSet.cardinal reachable));
+  prerr_endline ("- all funcs : " ^ string_of_int (BatSet.cardinal all));
+  prerr_endline ("- reachable : " ^ string_of_int (BatSet.cardinal reachable));
   if !Options.debug = "log" then prerr_endline (string_of_set to_string_fkey ~sep:", " reachable);
   p'

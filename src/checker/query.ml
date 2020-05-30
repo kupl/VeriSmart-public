@@ -69,11 +69,11 @@ let to_string_origin ?(report=false) : origin -> string
 
 let compare_query : query -> query -> int
 = fun q1 q2 ->
-  if Pervasives.compare q1.kind q2.kind = 0 then
-    if Pervasives.compare q1.loc q2.loc = 0 then
+  if Stdlib.compare q1.kind q2.kind = 0 then
+    if Stdlib.compare q1.loc q2.loc = 0 then
       BatString.compare (to_string_origin ~report:true q1.org_q) (to_string_origin ~report:true q2.org_q)
-    else Pervasives.compare q1.loc q2.loc
-  else Pervasives.compare q1.kind q2.kind
+    else Stdlib.compare q1.loc q2.loc
+  else Stdlib.compare q1.kind q2.kind
 
 let sort : query list -> query list
 = fun qs -> BatList.sort compare_query qs
@@ -86,11 +86,11 @@ type src = kind * loc * string (* location in the original source code *)
 
 let compare_src : src -> src -> int
 = fun (k1,l1,s1) (k2,l2,s2) ->
-  if Pervasives.compare k1 k2 = 0 then
-    if Pervasives.compare l1 l2 = 0 then
+  if Stdlib.compare k1 k2 = 0 then
+    if Stdlib.compare l1 l2 = 0 then
       BatString.compare s1 s2
-    else Pervasives.compare l1 l2
-  else Pervasives.compare k1 k2
+    else Stdlib.compare l1 l2
+  else Stdlib.compare k1 k2
 
 let equal_src s1 s2 = (compare_src s1 s2 = 0)
 

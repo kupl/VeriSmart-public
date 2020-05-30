@@ -92,7 +92,6 @@ let template1 : vformula -> bool
     | _ -> false
   ) lst_5
 
-
 let template2 : vformula -> bool
 = fun vf ->
   let (pre,con) = split_implication vf in
@@ -127,7 +126,6 @@ let template2 : vformula -> bool
       -> true
     | _ -> false
   ) lst_4
-
 
 let template3 : vformula -> bool 
 = fun vf ->
@@ -270,10 +268,10 @@ let template6 : vformula -> bool
     | _ -> false
   ) lst_3
 
-(*  g' = (740 * m) / p /\
+(*  g' = (100 * m) / p /\
  *  g' > e /\
  *  g = e /\
- *  v = (g * p) / 740
+ *  v = (g * p) / 100
  *  ->
  *  m >= v is safe.
  * *)
@@ -281,25 +279,48 @@ let template6 : vformula -> bool
 let template7 : vformula -> bool
 = fun vf ->
   let (pre,con) = split_implication vf in
-  let pre = fix_normalize pre in
-  let lst = try List.tl (list_of_conjuncts pre) with _ -> [] in
-  match lst,con with
-  | [VBinRel (VEq, VVar (x_1,_), VBinOp (VDiv, VBinOp (VMul, VInt n1, VVar (m1,_), _), p1, _));
-     VBinRel (VGt, VVar (x_2,_), e1);
-     VBinRel (VEq, VVar (x1,_), e2);
-     VBinRel (VEq, VVar (y1,_), VBinOp (VDiv, VBinOp (VMul, VVar (x2,_), p2, _), VInt n2, _))
-    ],
-    VBinRel (VGeq, VVar (m2,_), VVar (y2,_))
-    when is_renamed x_1 && is_renamed x_2 &&
-         not (is_renamed x1) && not (is_renamed x2) &&
-         BatBig_int.equal n1 n2 &&
-         BatString.equal m1 m2 &&
-         equal_ve p1 p2 &&
-         equal_ve e1 e2 &&
-         BatString.equal x1 x2 &&
-         BatString.equal y1 y2
-    -> true
-  | _ -> false 
+  let lst = list_of_conjuncts pre in
+  let lst1 = List.filter (fun vf -> match vf with VBinRel (VEq, VVar _, VBinOp (VDiv, VBinOp (VMul, VInt _, VVar _, _), _, _)) -> true | _ -> false) lst in
+  let lst2 = List.filter (fun vf -> match vf with VBinRel (VGt, VVar _, _) -> true | _ -> false) lst in
+  let lst3 = List.filter (fun vf -> match vf with VBinRel (VEq, VVar _, _) -> true | _ -> false) lst in
+  let lst4 = List.filter (fun vf -> match vf with VBinRel (VEq, VVar _, VBinOp (VDiv, VBinOp (VMul, VVar _, _, _), VInt _, _)) -> true | _ -> false) lst in
+  let lst = BatList.n_cartesian_product [lst1;lst2;lst3;lst4] in
+  List.exists (fun l ->
+    match l,con with
+    | [VBinRel (VEq, VVar (x_1,_), VBinOp (VDiv, VBinOp (VMul, VInt n1, VVar (m1,_), _), p1, _));
+       VBinRel (VGt, VVar (x_2,_), e1);
+       VBinRel (VEq, VVar (x1,_), e2);
+       VBinRel (VEq, VVar (y1,_), VBinOp (VDiv, VBinOp (VMul, VVar (x2,_), p2, _), VInt n2, _))
+      ],
+      VBinRel (VGeq, VVar (m2,_), VVar (y2,_))
+      when is_renamed x_1 && is_renamed x_2 &&
+           not (is_renamed x1) && not (is_renamed x2) &&
+           BatBig_int.equal n1 n2 &&
+           BatString.equal m1 m2 &&
+           equal_ve p1 p2 &&
+           equal_ve e1 e2 &&
+           BatString.equal x1 x2 &&
+           BatString.equal y1 y2
+           -> true
+    | _ -> false
+  ) lst
+
+(* A = 1 -> A == 0 \/ (A!=0 /\ (A * B / A) ==B)
+ * e1       e2         e3       e4     e6
+ * i.e., if A=1, 'A*B' is safe. *)
+let template8 : vformula -> bool
+= fun vf ->
+  let (pre,con) = split_implication vf in
+  let lst = list_of_conjuncts pre in
+  List.exists (fun f ->
+    match f,con with
+    | VBinRel (VEq,e1,VInt n1),
+      VOr (VBinRel (VEq,e2,VInt n2),
+           VAnd (VNot (VBinRel (VEq,e3,VInt n3)), VBinRel (VEq, VBinOp (VDiv, (VBinOp (VMul,e4,e5,t)),e6,t'), e7))) ->
+      BatBig_int.equal n1 BatBig_int.one && BatBig_int.equal n2 BatBig_int.zero && BatBig_int.equal n3 BatBig_int.zero &&
+      equal_ve e1 e2 && equal_ve e2 e3 && equal_ve e3 e4 && equal_ve e4 e6
+    | _ -> false
+  ) lst
 
 let valid_template : vformula -> bool
 = fun vf ->
@@ -349,5 +370,5 @@ let valid_template : vformula -> bool
   | Imply (pre,con) ->
     if has_sigeq vf || has_noflow vf then
       template0 vf || template1 vf || template2 vf || template3 vf || template4 vf
-    else template5 vf || template6 vf || template7 vf (* if false, will be checked by Z3 *)
+    else template5 vf || template6 vf || template7 vf || template8 vf (* if false, will be checked by Z3 *)
   | _ -> false

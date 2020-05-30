@@ -124,9 +124,9 @@ let gen_vc_bp : Global.t -> ItvDom.Mem.t -> InvMap.t -> Path.t ->
   let startf = get_cond_at_cutpoint global invmap func cp_entry in
   let (sp, qs) =
     List.fold_left (fun (acc_vf, acc_qs) node ->
-      let overflow = if !verify_io then Overflow.collect_queries acc_vf path (find_stmt node cfg) else [] in 
-      let assertion = if !verify_assert then Assertion.collect_queries global acc_vf path (find_stmt node cfg) else [] in
-      let new_qs = overflow @ assertion in
+      let assertion = if !check_assert then Assertion.collect_queries global acc_vf path (find_stmt node cfg) else [] in
+      let overflow = if !check_io then Overflow.collect_queries acc_vf path (find_stmt node cfg) else [] in
+      let new_qs = assertion @ overflow in
       convert_stmt global func node (acc_vf, acc_qs @ new_qs)
     ) (startf, []) mid in
   let g = get_cond_at_cutpoint global invmap func cp_exit in
@@ -236,11 +236,10 @@ let check_safety_one : Global.t -> Mem.t -> query -> bool * Z3.Model.model optio
   | DZ ->
     let final = add_numeric_info mem q.vc in
     is_valid_wrapper final
-  | ACCESS -> is_valid_wrapper q.vc
   | ASSERT ->
     let final = add_numeric_info mem q.vc in
-    is_valid_wrapper final 
-  | ERC20 | ERC721 | LEAK | SUICIDE -> raise (Failure "NotImplemented")
+    is_valid_wrapper final
+  | ERC20 | ERC721 | LEAK | SUICIDE | ACCESS -> raise (Failure "NotImplemented")
 
 exception Encountered_Unsafe_Query of Path.t * string
 
@@ -319,7 +318,7 @@ module Workset = struct
   
   module OrderedType = struct
     type t = work
-    let compare t1 t2 = Pervasives.compare (cost t1) (cost t2) 
+    let compare t1 t2 = Stdlib.compare (cost t1) (cost t2) 
   end
   
   module Heap = BatHeap.Make (OrderedType)
@@ -373,7 +372,7 @@ let rec work : PathSet.t -> Global.t -> ItvDom.Mem.t -> Workset.t -> InvMap.t ->
   iter := !iter + 1;
   if !iter mod 10 = 0 then
     (prerr_string ("Iter : " ^ string_of_int !iter ^ " ");
-     prerr_endline ((Workset.workset_info workset) ^ (" Total elapsed : " ^ (string_of_float (Sys.time () -. !Profiler.start_time)))));
+     prerr_endline ((Workset.workset_info workset) ^ " Total elapsed : " ^ string_of_float (Sys.time () -. !Profiler.start_time)));
   if Sys.time () -. !Profiler.start_time > float_of_int !Options.verify_timeout then qmap_prev
   else
   match Workset.choose workset with
@@ -393,10 +392,10 @@ let rec work : PathSet.t -> Global.t -> ItvDom.Mem.t -> Workset.t -> InvMap.t ->
       work paths global mem new_workset new_known qmap
 
 let scan_node: Global.t -> cfg -> Path.t -> Node.t -> QMap.t -> QMap.t
-= fun global g path n qmap ->
-  let overflow = if !verify_io then Overflow.collect_queries VTrue path (find_stmt n g) else [] in
-  let assertion = if !verify_assert then Assertion.collect_queries global VTrue path (find_stmt n g) else [] in
-  let queries = overflow @ assertion in
+= fun global g path node qmap ->
+  let assertion = if !check_assert then Assertion.collect_queries global VTrue path (find_stmt node g) else [] in
+  let overflow = if !check_io then Overflow.collect_queries VTrue path (find_stmt node g) else [] in
+  let queries = assertion @ overflow in
   List.fold_left (fun acc q ->
     QMap.add (QMap.mk_key q) (UnProven, 0) acc
   ) qmap queries
@@ -417,6 +416,7 @@ let init_qmap: Global.t -> PathSet.t -> QMap.t
 
 let run : Global.t -> ItvDom.Mem.t -> PathSet.t -> QMap.t
 = fun global mem paths ->
+  iter := 0;
   let init_workset = Workset.add InvMap.empty Workset.empty in
   let qmap = init_qmap global paths in
   work paths global mem init_workset InvMap.empty qmap

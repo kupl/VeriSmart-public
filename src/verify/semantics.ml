@@ -30,7 +30,6 @@ let weaken_vf2 : vformula -> vid list -> vformula
 = fun vf targets ->
   List.fold_left weaken_vf vf targets
 
-
 let rec get_target : lv -> vexp
 = fun lv ->
   match lv with
@@ -129,8 +128,7 @@ and convert_lv : lv -> vexp
   match lv with
   | Var (x,_) -> VVar (x,typ)
   | IndexAccess (e,Some _,EType (Bytes 1))
-    when get_type_exp e = EType (Bytes 1) ->
-    convert_aexp e
+    when get_type_exp e = EType (Bytes 1) -> convert_aexp e
   | IndexAccess (e1,Some e2,t) -> Read (convert_aexp e1, convert_aexp e2, typ)
   | IndexAccess (e,None,_) -> raise (Failure "convert_lv - IndexAccess")
   | MemberAccess (e,"balance",_,_) ->
@@ -400,8 +398,6 @@ let handle_static_call global caller (lvop,e,args) vf =
       weaken_vf2 vf def in
   final
 
-(* A contract's state variables can only changed by that contract. *)
-(* Hence, only constraints that involve def vars are invalidated. *)
 let handle_object_call global caller (lvop,e,args) vf =
   match lvop with
   | None -> vf

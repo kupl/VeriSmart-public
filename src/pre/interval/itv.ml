@@ -57,7 +57,7 @@ let lt' : t' -> t' -> bool
 = fun v1 v2 -> le' v1 v2 && not (eq' v1 v2)
 
 let gt' : t' -> t' -> bool
-= fun v1 v2 -> not (le' v1 v2)
+= fun v1 v2 -> not (le' v1 v2) (* check *) 
 
 let ge' : t' -> t' -> bool
 = fun v1 v2 -> not (lt' v1 v2) 
@@ -237,7 +237,7 @@ let times : t -> t -> t
       Itv (l,u)
     | _ -> raise (Failure "itv.ml : times")
 
-let divide : t -> t -> t 
+let divide : t -> t -> t
 = fun itv1 itv2 -> (* itv1/itv2 *)
   if is_bot itv1 || is_bot itv2 then bot else
   if eq (Itv (V zero,V zero)) itv2 then top else

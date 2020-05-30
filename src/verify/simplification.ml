@@ -14,7 +14,7 @@ let rec norm_vf : vformula -> vformula
   | VTrue | VFalse -> vf
   | VNot VTrue -> VFalse
   | VNot VFalse -> VTrue
-  | VNot (VBinRel (VGt,e1,e2)) -> VBinRel (VGeq,e2,e1)
+  | VNot (VBinRel (VGt,e1,e2)) -> VBinRel (VGeq,e2,e1) (* !(e1>e2) -> e2>=e1. *)
   | VNot f -> VNot (norm_vf f)
   | VAnd (VTrue,f) | VAnd (f,VTrue) -> norm_vf f
   | VAnd (VFalse,_)| VAnd (_,VFalse) -> VFalse
@@ -112,24 +112,10 @@ let rec norm_vf : vformula -> vformula
   | VBinRel (VGeq, VVar (x,EType (UInt 8)), VInt n)
     when BatBig_int.sign_big_int (BatBig_int.modulo n (BatBig_int.of_int 256)) = 0 -> VTrue 
   | VBinRel (VGeq, VVar (_,t), VInt n) when is_uintkind t && BatBig_int.sign_big_int n = 0 -> VTrue
-  | VBinRel (VGeq, VInt n1, VInt n2) ->
-    (* The integer values are obatined with the considerations of overflow possibilities, e.g.,
-     * see 'norm_ve' function which performs modulo operations when adding two integers.
-     * Thus, we can directly compare their values. *)
-    if BatBig_int.ge_big_int n1 n2 then VTrue else VFalse
   | VBinRel (rel,e1,e2) -> VBinRel (rel, norm_ve e1, norm_ve e2)
-    (* A = 1 -> A == 0 \/ (A!=0 /\ (A * B / A) ==B)
-     * e1       e2         e3       e4     e6
-     * i.e., if A=1, 'A*B' is safe.
-     * *)
-  | Imply (VAnd (VBinRel (VEq,e1,VInt n1),_),
-           VOr (VBinRel (VEq,e2,VInt n2),
-                VAnd (VNot (VBinRel (VEq,e3,VInt n3)), VBinRel (VEq, VBinOp (VDiv, (VBinOp (VMul,e4,e5,t)),e6,t'), e7))))
-    when BatBig_int.equal n1 BatBig_int.one &&
-         BatBig_int.equal n2 BatBig_int.zero &&
-         BatBig_int.equal n3 BatBig_int.zero &&
-         equal_ve e1 e2 && equal_ve e2 e3 && equal_ve e3 e4 && equal_ve e4 e6
-    -> VTrue
+    (* A = B / C /\ C != 0 -> A == 0 \/ (A != 0 /\ (A * C / A) == C)  *)
+    (* e1  e2  e3   e4  n4   e5   n5    e6   n6    e7  e8   e9   e10  *)
+    (* i.e., (B/C) * C is safe. *)
   | Imply (VAnd (VAnd (_,VBinRel (VEq,e1,VBinOp(VDiv,e2,e3,_))), VNot (VBinRel (VEq,e4,VInt n4))),
            VOr (VBinRel (VEq,e5,VInt n5),
                 VAnd (VNot (VBinRel (VEq,e6,VInt n6)), VBinRel (VEq, VBinOp (VDiv, (VBinOp (VMul,e7,e8,_)),e9,_),e10))))
@@ -165,7 +151,7 @@ let rec fix_normalize x =
     if equal_vf x' x then x'
     else fix_normalize x'
 
-
+(* assume input is conjunctive invariant *)
 let rec vf_to_set : vformula -> FormulaSet.t
 = fun vf ->
   match vf with

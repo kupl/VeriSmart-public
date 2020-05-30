@@ -16,17 +16,14 @@ and global = t
 let get_cfg : fkey -> global -> cfg
 = fun k global -> Lang.get_cfg (FuncMap.find k global.fmap)
 
-
 let get_all_lhs_f : func -> Node.t BatSet.t
 = fun f -> (Lang.get_cfg f).lh_set
-
 
 let get_all_lhs_c : contract -> Node.t BatSet.t
 = fun c ->
   List.fold_left (fun acc f ->
     BatSet.union (get_all_lhs_f f) acc
   ) BatSet.empty (get_funcs c)
-
 
 let get_all_lhs : pgm -> Node.t BatSet.t
 = fun p ->

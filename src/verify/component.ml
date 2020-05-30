@@ -8,6 +8,7 @@ and comps = {
   mapvars : var BatSet.t;
   composites : ExpSet.t;
   ivars : var BatSet.t;
+  avars : var BatSet.t;
   ints : BigIntSet.t
 }
 
@@ -99,6 +100,14 @@ let mk_comps : ExpSet.t -> BigIntSet.t -> comps
       | _ -> acc
     ) expset BatSet.empty
   in
+  let avars =
+    ExpSet.fold (fun ve acc ->
+      match ve with
+      | VVar (x,t) when is_address t ->
+        BatSet.add (x,t) acc
+      | _ -> acc
+    ) expset BatSet.empty
+  in
   let mapvars =
     ExpSet.fold (fun ve acc ->
       match ve with
@@ -114,7 +123,7 @@ let mk_comps : ExpSet.t -> BigIntSet.t -> comps
       | _ -> false
     ) expset
   in
-  {mapvars = mapvars; composites = reads; ivars = ivars; ints = intset}
+  {mapvars=mapvars; composites=reads; ivars=ivars; avars=avars; ints=intset}
 
 let collect_comps_f : func -> comps
 = fun f ->
@@ -136,4 +145,5 @@ let to_string : comps -> string
   "map vars   : " ^ string_of_list ~first:"{" ~last:"}" ~sep:", " (fst|>id) (BatSet.to_list comp.mapvars) ^ "\n" ^
   "composites : " ^ string_of_list ~first:"{" ~last:"}" ~sep:", " to_string_vexp (ExpSet.to_list comp.composites) ^ "\n" ^
   "int vars   : " ^ string_of_list ~first:"{" ~last:"}" ~sep:", " (fst|>id) (BatSet.to_list comp.ivars) ^ "\n" ^
+  "addr vars  : " ^ string_of_list ~first:"{" ~last:"}" ~sep:", " (fst|>id) (BatSet.to_list comp.avars) ^ "\n" ^
   "integers   : " ^ string_of_list ~first:"{" ~last:"}" ~sep:", " BatBig_int.to_string (BigIntSet.to_list comp.ints)

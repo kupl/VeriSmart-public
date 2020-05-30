@@ -6,7 +6,7 @@ let end_time = ref 0.0 (* global end time *)
 let start : string -> unit
 = fun s ->
   local_start := Sys.time ();
-  prerr_string s; flush stderr 
+  prerr_string ("* " ^ s); flush stderr
 
 let finish : string -> unit
 = fun s ->

@@ -42,7 +42,7 @@ module Mem = struct
   let bot = BatMap.empty
 
   let find x s = try BatMap.find x s with Not_found -> Val.bot
-  let find2 x s = try BatMap.find x s with Not_found -> (Itv.top, GTaint.bot, BTaint.bot)
+  let find2 x s = try BatMap.find x s with Not_found -> (Itv.top, GTaint.bot, BTaint.bot) (* for linearization purpose, taint values will not be used *) 
 
   let filter = BatMap.filter
   let map = BatMap.mapi

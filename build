@@ -1,7 +1,7 @@
 #!/bin/bash
 
 TARGET=main.native
-INCLUDE_DIRS=lib,frontend,pre,pre/interval,verify,util,checker
+INCLUDE_DIRS=src/frontend,src/pre,src/pre/interval,src/verify,src/util,src/checker
 
 function clean
 {
@@ -18,4 +18,4 @@ while [ $# -ne 0 ] && [ ! -z $1 ]; do
 done
 
 
-time ocamlbuild $TARGET -use-ocamlfind -tag thread -Is $INCLUDE_DIRS
+time ocamlbuild src/$TARGET -use-ocamlfind -tag thread -Is $INCLUDE_DIRS

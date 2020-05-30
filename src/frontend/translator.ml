@@ -116,7 +116,8 @@ and trans_tuple : string -> typ
 = fun str ->
   let _ = assert (BatString.exists str "tuple") in
   let str' = BatString.chop ~l:6 ~r:1 str in (*tuple(uint,,string,) => uint,,string, *)
-  let strs = BatString.nsplit str' "," in (*uint,,string, => [uint,"",string,""]*)
+  let _ = assert (not (str' = "")) in
+  let strs = BatString.split_on_char ',' str' in (*uint,,string, => [uint,"",string,""]*)
   TupleType (List.map trans_str_to_typeName strs)
 
 and trans_str_to_typeName : string -> typ
@@ -218,7 +219,7 @@ and trans_expression : Yojson.Basic.t -> exp
   | `String "Identifier" ->
      (try
        let vname = json |> value_of "name" |> to_string in
-       let vinfo = 
+       let vinfo = (* the information is not exact at the moment, but will be updated in the preprocessing. *)
          { vloc = loc;
            is_gvar = false;
            vtype = trans_typeName_Descriptions json;
@@ -330,7 +331,7 @@ and trans_expression : Yojson.Basic.t -> exp
      else Lv (Tuple ((List.map (fun e -> try Some (trans_expression e) with _ -> None) tuples), typ))
   | `String "Conditional" ->
      let cond = json |> value_of "condition" |> trans_expression in
-     let t = json |> value_of "trueExpression" |> trans_expression in 
+     let t = json |> value_of "trueExpression" |> trans_expression in
      let f = json |> value_of "falseExpression" |> trans_expression in
      CondTemp (cond,t,f,typ,loc)
   | `String "NewExpression" ->
@@ -376,7 +377,7 @@ and trans_functionCallArguments : Yojson.Basic.t -> exp list
        ) [] l
      in 
      List.rev (reversed_args)
-  | `Null -> []
+  | `Null -> [] (* no arguments: `Null, not `List [] *)
   | _ -> assert false
 
 (* nodeType : O *)
@@ -629,7 +630,7 @@ let trans_contractDefinition : Yojson.Basic.t -> contract
     { numid = json |> value_of "id" |> to_int;
       inherit_order = List.map to_int (json |> value_of "linearizedBaseContracts" |> to_list);
       lib_typ_lst = [];
-      ckind = json |> value_of "contractKind" |> to_string 
+      ckind = json |> value_of "contractKind" |> to_string
     } in
   let base_contracts = json |> value_of "baseContracts" |> to_list in (* A is B,C,D => base_contracts : [B; C; D] *)
   let cnstr_calls_inherit =
@@ -637,7 +638,6 @@ let trans_contractDefinition : Yojson.Basic.t -> contract
       let cnstr_call = trans_inheritanceSpecifier base in
       acc @ [cnstr_call] (* constructors are called starting from parents *)
     ) [] base_contracts in
-  
   let (cid, gvar_decls, structs, enums, func_defs, cinfo) =
     List.fold_left (fun (cid, gvar_decls, structs, enums, func_defs, cinfo) j ->
       let node_typ = value_of "nodeType" j in

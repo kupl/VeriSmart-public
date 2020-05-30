@@ -21,7 +21,7 @@ let rec typ_to_sort : typ -> Z3.Sort.sort
   | Contract s -> Z3.BitVector.mk_sort !ctx 160
   | Struct s -> Z3.Sort.mk_uninterpreted_s !ctx s
   | Enum s -> Z3.BitVector.mk_sort !ctx 256
-  | TupleType _ -> raise (Failure "typ_to_sort: tuple types are not queried as a whole.") 
+  | TupleType _ -> raise (Failure "typ_to_sort: tuple types are not queried as a whole.")
   | Void -> raise (Failure "typ_to_sort: Void")
 
 and etyp_to_sort : elem_typ -> Z3.Sort.sort
@@ -187,7 +187,7 @@ and fold_ve : vexp -> vexp
   | VCond f -> VCond (fold_vf f) 
   | Ite (e1,e2,e3) -> Ite (fold_ve e1, fold_ve e2, fold_ve e3)
 
-let rec constant_folding : vformula -> vformula 
+let rec constant_folding : vformula -> vformula
 = fun vf ->
   let vf' = fold_vf vf in 
   if equal_vf vf vf' then vf'

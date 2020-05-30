@@ -10,27 +10,27 @@ open ItvDom
 
 let gen_conjunct : comps -> vformula list
 = fun comps ->
-  let ivars = BatSet.to_list comps.ivars in
-  let reads = ExpSet.to_list comps.composites in
   let mvars = BatSet.to_list comps.mapvars in
+  let reads = ExpSet.to_list comps.composites in
+  let ivars = BatSet.to_list comps.ivars in
   let ints = BigIntSet.to_list comps.ints in
   let ivars_mvars = BatList.cartesian_product ivars mvars in
   let ints_mvars = BatList.cartesian_product ints mvars in
   let ivars_ivars = BatList.cartesian_product ivars ivars in
   let ints_ivars = BatList.cartesian_product ints ivars in
   let reads_ivars = BatList.cartesian_product reads ivars in
-  let l1 = 
+  let l1 =
     List.fold_left (fun acc ((x,xt),(m,mt)) ->
       if is_uint256 xt then (SigmaEqual (VVar (x,xt), (m,mt)))::acc
       else acc 
     ) [] ivars_mvars in
   let l2 =
-    List.fold_left (fun acc (n,(m,mt)) ->
-      (SigmaEqual (VInt n, (m,mt)))::acc
+    List.fold_left (fun acc (n,(m,t)) ->
+      (SigmaEqual (VInt n, (m,t)))::acc
     ) [] ints_mvars in 
   let l3 = 
-    List.fold_left (fun acc (m,mt) -> 
-      (NoOverFlow (m,mt))::acc
+    List.fold_left (fun acc (m,t) -> 
+      (NoOverFlow (m,t))::acc
     ) [] mvars in
   let l4 = (* x = y *)
     List.fold_left (fun acc ((x,xt),(y,yt)) ->
@@ -43,16 +43,16 @@ let gen_conjunct : comps -> vformula list
       else acc
     ) [] ivars_ivars in
   let l6 = (* x >= n *)
-    List.fold_left (fun acc (n, (y,yt)) ->
-      (VBinRel (VGeq, VVar (y,yt), VInt n))::acc
+    List.fold_left (fun acc (n, (y,t)) ->
+      (VBinRel (VGeq, VVar (y,t), VInt n))::acc
     ) [] ints_ivars in
   let l7 = (* n = x *)
-    List.fold_left (fun acc (n, (y,yt)) ->
-      (VBinRel (VEq, VVar (y,yt), VInt n))::acc
+    List.fold_left (fun acc (n, (y,t)) ->
+      (VBinRel (VEq, VVar (y,t), VInt n))::acc
     ) [] ints_ivars in
   let l8 = (* n >= x *)
-    List.fold_left (fun acc (n, (y,yt)) ->
-      (VBinRel (VGeq, VInt n, VVar (y,yt)))::acc
+    List.fold_left (fun acc (n, (y,t)) ->
+      (VBinRel (VGeq, VInt n, VVar (y,t)))::acc
     ) [] ints_ivars in
   let l9 = (* x[y] = z *)
     List.fold_left (fun acc (r, (x,xt)) ->
@@ -91,11 +91,12 @@ let refine_bp : Global.t -> Path.t -> ModelMap.t -> InvMap.t -> InvMap.t list
     let comps_cnstr = collect_comps_f cnstr in
       {mapvars = BatSet.filter (fun v -> List.mem v global.gvars) comps_cnstr.mapvars;
        composites = ExpSet.filter (fun e ->
-                     match e with
-                     | Read (VVar x, VVar y, _) -> List.mem x global.gvars && List.mem y global.gvars
-                     | _ -> assert false
+                      match e with
+                      | Read (VVar x, VVar y, _) -> List.mem x global.gvars && List.mem y global.gvars
+                      | _ -> assert false
                    ) comps_cnstr.composites;
        ivars = BatSet.filter (fun v -> List.mem v global.gvars) comps_cnstr.ivars;
+       avars = BatSet.filter (fun v -> List.mem v global.gvars) comps_cnstr.avars;
        ints = BigIntSet.union comps_cnstr.ints comps_bp.ints}
   in
   BatSet.fold (fun node acc ->

@@ -67,7 +67,7 @@ let print : QMap.t -> unit
   let lst = QMap.bindings qmap in
   print_endline "=== Report ===";
   List.iteri (fun i ((k,l,s) as src, (stat,iter)) ->
-    print_string ("[" ^ string_of_int (i+1) ^ "]" ^ " ");
+    print_string ("[" ^ string_of_int (i+1) ^ "]" ^ " " ^ "[" ^ Query.to_string_kind_simple k ^ "]" ^ " ");
     print_endline (Query.to_string_src src ^ " : " ^ to_string_status stat)
   ) lst;
   print_endline "";

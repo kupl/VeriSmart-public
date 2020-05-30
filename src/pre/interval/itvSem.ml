@@ -46,9 +46,8 @@ and eval_bop : bop -> Val.t -> Val.t -> Val.t
   | Sub -> (Itv.minus itv1 itv2, gtaint, btaint) 
   | Mul -> (Itv.times itv1 itv2, gtaint, btaint)
   | Div -> (Itv.divide itv1 itv2, gtaint, btaint)
-  | Mod ->
-    (Itv.top, gtaint, btaint)
-  | Exponent -> (Itv.power itv1 itv2, gtaint, btaint) 
+  | Mod -> (Itv.top, gtaint, btaint)
+  | Exponent -> (Itv.power itv1 itv2, gtaint, btaint)
   | ShiftL | ShiftR | BAnd | BOr | BXor
   | GEq | Gt | LEq | Lt | Eq | NEq | LAnd | LOr -> (Itv.top, gtaint, btaint)
 
@@ -184,13 +183,13 @@ let eval_stmt : Global.t -> id -> func -> Node.t -> Mem.t -> Mem.t
     if BatString.equal (get_finfo func).scope_s main_name then
       assign (lv, e) mem
     else
-      update (loc_of lv) (Itv.top, GTaint.bot, BTaint.bot) mem 
+      update (loc_of lv) (Itv.top, GTaint.bot, BTaint.bot) mem
   | Assembly (lst,_) ->
-    let lst = List.map fst lst in 
+    let lst = List.map fst lst in
     Mem.map (fun (x,t) v ->
       if List.mem x lst then
         (Itv.top, Val.gtaint_of v, Val.btaint_of v)
       else v 
     ) mem
-  | Skip | Throw | Assume _ | Assert _  -> mem 
+  | Skip | Throw | Assume _ | Assert _  -> mem
   | If _ | Seq _ | While _ | Break | Continue -> raise (Failure "eval_stmt")

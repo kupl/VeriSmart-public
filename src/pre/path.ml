@@ -136,7 +136,7 @@ let generate_basic_paths : pgm -> pgm
 (****************************)
 (****************************)
 
-module PathSet = BatSet.Make (struct type t = path let compare = Pervasives.compare end)
+module PathSet = BatSet.Make (struct type t = path let compare = Stdlib.compare end)
 
 let collect_bps_f : func -> PathSet.t
 = fun f ->
@@ -165,6 +165,6 @@ let generate : pgm -> PathSet.t
   let pgm = generate_basic_paths pgm in
   let paths = collect_bps pgm in
   Profiler.finish "Generating Paths ... ";
-  Profiler.print_log ("# paths : " ^ string_of_int (PathSet.cardinal paths));
+  Profiler.print_log ("- paths : " ^ string_of_int (PathSet.cardinal paths));
   prerr_endline "";
   paths

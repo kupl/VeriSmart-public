@@ -116,7 +116,7 @@ let rec trans : stmt -> node option -> node option -> (node * cfg) -> (node * cf
   | Assume (BinOp (LOr,e1,e2,einfo), loc) ->
     let (n1,g1) = trans (Assume (e1,loc)) lhop lxop (n,g) in
     let neg = Assume (BinOp (LAnd, UnOp (LNot,e1,EType Bool), e2, einfo), loc) in
-    let (n2,g2) = trans neg lhop lxop (n,g1) in
+    let (n2,g2) = trans neg lhop lxop (n,g1) in (* should be n, not n1 *)
     let join = Node.make () in
     (join, g2 |> add_node_stmt join Skip |> add_edge n1 join |> add_edge n2 join)
   | Assume (UnOp (LNot, UnOp (LNot,e,t1), t2), loc) -> (* !!e -> e *)

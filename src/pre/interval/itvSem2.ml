@@ -12,8 +12,7 @@ let rec eval_ve : vexp -> Mem.t -> Val.t
   | Write (e1,e2,e3) -> Val.of_itv Itv.top
   | VBinOp (bop,e1,e2,t) -> eval_bop bop (eval_ve e1 mem) (eval_ve e2 mem)
   | VUnOp (uop,e,t) -> eval_uop uop (eval_ve e mem)
-  | VCast (t,e) ->
-    eval_ve e mem
+  | VCast (t,e) -> eval_ve e mem
   | VCond f -> Val.of_itv Itv.top
   | Ite (e1,e2,e3) -> Val.of_itv Itv.top
 
