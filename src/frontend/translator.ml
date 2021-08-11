@@ -1,5 +1,6 @@
 open Lang
 open Options
+open Vocab
 
 (* helper functions *)
 let value_of = Yojson.Basic.Util.member
@@ -14,10 +15,10 @@ let line_indicator : int list -> int -> int
 = fun lst byte ->
   let (_,n) =
   List.fold_left (fun (set,line) cur ->
-    if not set && byte < cur then (true,line) else 
-    if set then (set,line)
+    if not set && byte < cur then (true,line)
+    else if set then (set,line)
     else (set,line+1)
-  ) (false,1) lst in 
+  ) (false,1) lst in
   n
 
 let get_loc : Yojson.Basic.t -> int
@@ -42,7 +43,7 @@ let rec trans_typeName : Yojson.Basic.t -> typ
 = fun json ->
   let node_typ = value_of "nodeType" json in
   match node_typ with
-  | `String "ElementaryTypeName" -> 
+  | `String "ElementaryTypeName" ->
      EType (trans_elementaryTypeName (json |> value_of "typeDescriptions" |> value_of "typeString" |> to_string))
   | `String "Mapping" -> 
      let key = trans_elementaryTypeName (json |> value_of "keyType" |> value_of "typeDescriptions" |> value_of "typeString" |> to_string) in
@@ -64,9 +65,9 @@ and trans_struct_type : string -> typ
 = fun str ->
   let _ = assert (BatString.starts_with str "struct") in
   let (_, str') = BatString.replace str " pointer" "" in
-  let (_, final) = BatString.replace str' "struct " "" in (* struct tmp.tmp1 => tmp.tmp1 *)
-  let (left, right) = BatString.split final "." in (*tmp.tmp1 => (tmp, tmp1) || tmp1 => ("", tmp1) *)
-  Struct right
+  let (_, final) = BatString.replace str' "struct " "" in (* struct ContractName.StructName => ContractName.StructName *)
+  let (left, right) = BatString.split final "." in (* ContractName.StructName => (ContractName, StructName) *)
+  Struct [left;right]
 
 and trans_enum_type : string -> typ
 = fun str ->
@@ -226,6 +227,7 @@ and trans_expression : Yojson.Basic.t -> exp
            vvis = Private; 
            vid = (try json |> value_of "id" |> to_int with _ -> assert false);
            refid = (try json |> value_of "referencedDeclaration" |> to_int with _ -> assert false);
+           vscope = -1;
            storage = "";
            flag = false; (* should be marked as false *)
            org = vname
@@ -269,11 +271,14 @@ and trans_expression : Yojson.Basic.t -> exp
          in
          let str = json |> value_of "value" |> to_string in 
          (match typ with
-          | ConstInt | EType Address ->
+          | ConstInt ->
+            let value = float_of_string str in
+            Int (BatBig_int.of_float (value *. factor))
+          | EType Address ->
             let value = try BatBig_int.of_string str with _ -> BatBig_int.of_float (float_of_string str) in
-            Int (BatBig_int.mul value (BatBig_int.of_float factor))
+            Cast (EType Address, Int (BatBig_int.mul value (BatBig_int.of_float factor)))
           | ConstReal ->
-            let value = float_of_string str in 
+            let value = float_of_string str in
             Real (value *. factor)
           | _ -> assert false)
       | `String "bool" ->
@@ -283,31 +288,45 @@ and trans_expression : Yojson.Basic.t -> exp
           | `String "false" -> False
           | _ -> assert false)
       | `String "string" ->
-         let s = 
-           try json |> value_of "value" |> to_string 
-           with _ -> json |> value_of "hexValue" |> to_string in
+         let s = try json |> value_of "value" |> to_string with _ -> json |> value_of "hexValue" |> to_string in
          Str s
-      | _ -> raise (Failure "Unsupported: trans_expression2"))
+      | `String "hexString" ->
+         let s = json |> value_of "hexValue" |> to_string in
+         Str s
+      | `String s -> raise (Failure ("Unsupported: trans_expression2 - " ^ s ^ " : line " ^ string_of_int loc))
+      | _ -> assert false)
   | `String "FunctionCall" ->
      (match value_of "kind" json with
+      | `String "functionCall" when json |> value_of "expression" |> value_of "nodeType" = `String "FunctionCallOptions" ->
+         let json' = json |> value_of "expression" in
+         let _ = assert (value_of "nodeType" json' = `String "FunctionCallOptions") in
+         let args = json |> value_of "arguments" |> trans_functionCallArguments in (* should be be json, not json' *)
+         let exp = json' |> value_of "expression" |> trans_expression in (* for the rest, should be json', not json *)
+         let opnames = json' |> value_of "names" |> to_list |> List.map to_string in
+         let ops = json' |> value_of "options" |> to_list |> List.map trans_expression in
+         let _ = assert (List.length opnames = List.length ops) in
+         let _ = assert (List.length opnames <=2 && List.length ops <=2) in
+         let ethop = match BatList.index_of "value" opnames with Some n -> Some (BatList.at ops n) | None -> None in
+         let gasop = match BatList.index_of "gas" opnames with Some n -> Some (BatList.at ops n) | None -> None in
+         CallTemp (exp, args, ethop, gasop, {eloc=loc; etyp=typ; eid=nid})
+      | `String "functionCall" ->
+         let exp = json |> value_of "expression" |> trans_expression in
+         let args = json |> value_of "arguments" |> trans_functionCallArguments in
+         CallTemp (exp,args,None,None,{eloc=loc; etyp=typ; eid=nid})
       | `String "typeConversion" ->
          let arg = json |> value_of "arguments" |> to_list in
          let _ = assert (List.length arg = 1) in
          let exp = trans_expression (List.hd arg)
          in Cast (typ, exp)
-      | `String "functionCall" ->
-         let exp = json |> value_of "expression" |> trans_expression in
-         let args = json |> value_of "arguments" |> trans_functionCallArguments in
-         CallTemp (exp,args,{eloc=loc; etyp=typ; eid=nid})
       | `String "structConstructorCall" ->
          let exp = json |> value_of "expression" |> trans_expression in
          let args = json |> value_of "arguments" |> trans_functionCallArguments in
          let names = json |> value_of "names" |> to_list in
          if List.length names = 0 then (* member names are not given *)
-           CallTemp (Lv (Var ("struct_init",dummy_vinfo)), exp::args, {eloc=loc; etyp=typ; eid=nid})
+           CallTemp (Lv (Var ("struct_init",dummy_vinfo)), exp::args, None, None, {eloc=loc; etyp=typ; eid=nid})
          else
            let args_names = List.map (fun name -> Lv (Var (to_string name, dummy_vinfo))) names in
-           CallTemp (Lv (Var ("struct_init2",dummy_vinfo)), exp::args_names@args, {eloc=loc; etyp=typ; eid=nid})
+           CallTemp (Lv (Var ("struct_init2",dummy_vinfo)), exp::args_names@args, None, None, {eloc=loc; etyp=typ; eid=nid})
       | `String s -> raise (Failure ("Unsupported: trans_expression3-"^s))
       | _ -> assert false)
   | `String "UnaryOperation" ->
@@ -329,7 +348,7 @@ and trans_expression : Yojson.Basic.t -> exp
      if is_array typ then Lv (Tuple ((List.map (fun e -> try Some (trans_expression e) with _ -> None) tuples), typ)) else
      if List.length tuples = 1 then trans_expression (List.hd tuples)
      else Lv (Tuple ((List.map (fun e -> try Some (trans_expression e) with _ -> None) tuples), typ))
-  | `String "Conditional" ->
+  | `String "Conditional" -> (* cond ? t : f *)
      let cond = json |> value_of "condition" |> trans_expression in
      let t = json |> value_of "trueExpression" |> trans_expression in
      let f = json |> value_of "falseExpression" |> trans_expression in
@@ -361,22 +380,24 @@ and trans_expression : Yojson.Basic.t -> exp
        | `String ">>=" -> AssignTemp (lv, BinOp (ShiftR,Lv lv,exp, {eloc=loc; etyp=typ; eid=nid}), loc)
        | _ -> raise (Failure " Unsupported: trans_expression5"))
   | `String "ElementaryTypeNameExpression" ->
-    let etyp = json |> value_of "typeName" |> to_string |> trans_elementaryTypeName in
-    ETypeName etyp
-  | `String s -> raise (Failure ("trans_expression6-"^s))
-  | _ -> raise (Failure "Unsupported: trans_expression7")
+     (* json AST from solc is slightly differnt per version. *)
+     (try
+       let etyp = json |> value_of "typeName" |> to_string |> trans_elementaryTypeName in
+       ETypeName etyp
+     with
+       _ ->
+       let etyp = json |> value_of "typeName" |> value_of "name" |> to_string |> trans_elementaryTypeName in
+       ETypeName etyp)
+  | `String s ->
+     failwith ("trans_expression6-" ^ s ^ "@" ^ string_of_int loc)
+  | _ -> failwith "Unsupported: trans_expression7"
 
 (* nodeType: X *)  
 and trans_functionCallArguments : Yojson.Basic.t -> exp list
 = fun json ->
   match json with 
   | `List l ->
-     let reversed_args =
-       List.fold_left (fun acc j ->
-         (trans_expression j)::acc
-       ) [] l
-     in 
-     List.rev (reversed_args)
+     List.fold_left (fun acc j -> acc @ [(trans_expression j)]) [] l
   | `Null -> [] (* no arguments: `Null, not `List [] *)
   | _ -> assert false
 
@@ -390,6 +411,18 @@ and trans_expressionStatement : Yojson.Basic.t -> stmt
   match value_of "nodeType" json' with
   | `String "FunctionCall" ->
      (match value_of "kind" json' with
+      | `String "functionCall" when json' |> value_of "expression" |> value_of "nodeType" = `String "FunctionCallOptions" ->
+         let json'' = json' |> value_of "expression" in
+         let _ = assert (value_of "nodeType" json'' = `String "FunctionCallOptions") in
+         let args = json' |> value_of "arguments" |> trans_functionCallArguments in (* should be be json', not json'' *)
+         let exp = json'' |> value_of "expression" |> trans_expression in (* for the rest, should be json'', not json' *)
+         let opnames = json'' |> value_of "names" |> to_list |> List.map to_string in
+         let ops = json'' |> value_of "options" |> to_list |> List.map trans_expression in
+         let _ = assert (List.length opnames = List.length ops) in
+         let _ = assert (List.length opnames <=2 && List.length ops <=2) in
+         let ethop = match BatList.index_of "value" opnames with Some n -> Some (BatList.at ops n) | None -> None in
+         let gasop = match BatList.index_of "gas" opnames with Some n -> Some (BatList.at ops n) | None -> None in
+         Call (None, exp, args, ethop, gasop, get_loc json', json' |> value_of "id" |> to_int)
       | `String "functionCall" ->
          let exp = json' |> value_of "expression" |> trans_expression in (* function name *)
          let args = json' |> value_of "arguments" |> trans_functionCallArguments in
@@ -400,10 +433,10 @@ and trans_expressionStatement : Yojson.Basic.t -> stmt
               If (List.hd args, Skip, Throw)) else
            if is_assert exp then
              (assert (List.length args = 1);
-              Seq (Assert (List.hd args, get_loc json'), If (List.hd args, Skip, Throw)))
-           else Call (None, exp, args, get_loc json', json' |> value_of "id" |> to_int) (* normal case *) 
+              Seq (Assert (List.hd args, "default", get_loc json'), If (List.hd args, Skip, Throw)))
+           else Call (None, exp, args, None, None, get_loc json', json' |> value_of "id" |> to_int) (* normal case *) 
       | _ -> raise (Failure "Unsupported: trans_expressionStatement1"))
-  | `String "Assignment" -> 
+  | `String "Assignment" ->
      let lv = json' |> value_of "leftHandSide" |> trans_expression |> exp_to_lv in
      let exp = json' |> value_of "rightHandSide" |> trans_expression in
      let typ = json' |> value_of "leftHandSide" |> trans_typeName_Descriptions in 
@@ -435,13 +468,13 @@ and trans_expressionStatement : Yojson.Basic.t -> stmt
      | `String "delete" ->
         let sub = json' |> value_of "subExpression" |> trans_expression in
         let lv = Var ("delete",dummy_vinfo) in
-        Call (None, Lv lv, [sub], loc, nid)
+        Call (None, Lv lv, [sub], None, None, loc, nid)
      | `String s -> raise (Failure ("Unsupported Unary Op: " ^ s))
      | _ -> assert false)
   | `String "Identifier" -> Skip
   | `String "BinaryOperation" -> Skip
   | `String "IndexAccess" -> Skip
-  | `String "Conditional" ->
+  | `String "Conditional" -> (* cond ? t : f *)
      let cond = json' |> value_of "condition" |> trans_expression in
      (* since json generated by solc does not have proper structure,
       * this additional manipulation step should be forced. *)
@@ -449,7 +482,8 @@ and trans_expressionStatement : Yojson.Basic.t -> stmt
      let f = `Assoc [("expression", value_of "falseExpression" json'); ("nodeType", `String "ExpressionStatement")] |> trans_expressionStatement in
      If (cond, t, f)
   | `String "TupleExpression" -> Skip
-  | `String s -> raise (Failure ("Unsupported: trans_expressionStatement3 - " ^ s))
+  | `String "FunctionCallOptions" -> Skip (* e.g., "msg.sender.call{value: msg.value-amountEth};" does nothing. E.g., '("")' should be appended. *)
+  | `String s -> raise (Failure ("Unsupported: trans_expressionStatement3 - " ^ s ^ " : line " ^ string_of_int loc))
   | _ -> assert false
 
 (* nodeType: X *)
@@ -474,11 +508,80 @@ let trans_variable_declaration : Yojson.Basic.t -> var_decl
       vvis = json |> value_of "visibility" |> trans_visibility;
       vid = (try json |> value_of "id" |> to_int with _ -> assert false);
       refid = (try json |> value_of "id" |> to_int with _ -> assert false); (* for the declarations, assign themselves. *)
+      vscope = (try json |> value_of "scope" |> to_int with _ -> assert false);
       storage = (try json |> value_of "storageLocation" |> to_string with _ -> assert false);
       flag = true; (* true only for variable declarations *)
       org = vname
     } in
   (vname,vinfo)
+
+let rec trans_yul_exp : (string * int) list -> int -> Yojson.Basic.t -> (id * int) list
+= fun ref ast_id json ->
+  let node_typ = json |> value_of "nodeType" in
+  match node_typ with
+  | `String "YulIdentifier" ->
+     let name = json |> value_of "name" |> to_string in
+     (* Locals in assembly block do not have references in external blocks. Thus, assign assembly block's AST id. *)
+     let refid = try List.assoc (json |> value_of "src" |> to_string) ref with Not_found -> ast_id in
+     [(name, refid)]
+  | `String "YulLiteral" -> []
+  | `String "YulFunctionCall" ->
+     (* let fname = json |> value_of "functionName" |> value_of "name" |> to_string in *)
+     let args = json |> value_of "arguments" |> to_list in
+     let args = List.fold_left (fun acc arg -> acc @ (trans_yul_exp ref ast_id arg)) [] args in
+     args
+  | _ -> failwith "trans_yul_exp"
+
+let trans_yul_stmt : Yojson.Basic.t -> (string * int) list -> int -> (id * int) list
+= fun json ref ast_id ->
+  let node_typ = json |> value_of "nodeType" in
+  match node_typ with
+  | `String "YulVariableDeclaration" ->
+     let lhs = json |> value_of "variables" |> to_list in
+     let lhs =
+       List.map (fun j ->
+         let name = j |> value_of "name" |> to_string in
+         (* let _ = print_endline name in
+         let _ = print_endline (j |> value_of "src" |> to_string) in
+         let _ = print_endline (Vocab.string_of_list (fun (src,refid) -> src ^ " : " ^ string_of_int refid) ref) in *)
+         (* Locals in assembly block do not have references in external blocks. Thus, assign assembly block's AST id. *)
+         let refid = try List.assoc (j |> value_of "src" |> to_string) ref with Not_found -> ast_id 
+         in
+         (name,refid)
+       ) lhs in
+     let rhs = json |> value_of "value" |> trans_yul_exp ref ast_id in
+     rhs@lhs
+  | `String "YulAssignment" ->
+     let lhs = json |> value_of "variableNames" |> to_list in
+     let lhs =
+       List.map (fun j ->
+         let name = j |> value_of "name" |> to_string in
+         let refid = List.assoc (j |> value_of "src" |> to_string) ref in
+         (name,refid)
+       ) lhs in
+     let rhs = json |> value_of "value" |> trans_yul_exp ref ast_id in
+     rhs@lhs
+  | `String "YulExpressionStatement" ->
+     json |> value_of "expression" |> trans_yul_exp ref ast_id
+  | `String s -> failwith ("trans_yul_stmt : " ^ s ^ " @ " ^ string_of_int (get_loc json))
+  | _ -> assert false
+
+let trans_yul_block : Yojson.Basic.t -> (id * int) list
+= fun json ->
+  let _ = assert (value_of "nodeType" json = `String "InlineAssembly") in
+  let ext_refs = json |> value_of "externalReferences" |> to_list in
+  let ext_refs =
+    List.map (fun er ->
+      (er |> value_of "src" |> to_string,  er |> value_of "declaration" |> to_int)
+    ) ext_refs in
+  let ast_id = json |> value_of "id" |> to_int in
+  let j = value_of "AST" json in
+  let _ = assert (value_of "nodeType" j = `String "YulBlock") in
+  let statements = j |> value_of "statements" |> to_list in
+  List.fold_left (fun acc j' ->
+    acc @ (trans_yul_stmt j' ext_refs ast_id)
+  ) [] statements
+
 
 (* nodeType : X *)
 let rec trans_statement : Yojson.Basic.t -> stmt
@@ -507,7 +610,7 @@ let rec trans_statement : Yojson.Basic.t -> stmt
       | `Null -> Decl lv
       | exp -> Assign (lv, trans_expression exp, loc))
   | `String "ExpressionStatement" -> trans_expressionStatement json
-  | `String "PlaceholderStatement" -> Skip
+  | `String "PlaceholderStatement" -> PlaceHolder
   | `String "ForStatement" ->
      let init = try json |> value_of "initializationExpression" |> trans_statement with _ -> Skip in (* for ( ;cond;a++) *)
      let cond = try json |> value_of "condition" |> trans_expression with _ -> True in (* for (init; ;a++) *)
@@ -541,16 +644,25 @@ let rec trans_statement : Yojson.Basic.t -> stmt
   | `String "Break" -> Break
   | `String "Continue" -> Continue
   | `String "InlineAssembly" ->
-     let lst = json |> value_of "externalReferences" |> to_list in
-     let var_refid_pairs =
-       List.map (fun j ->
-         match j with
-         | `Assoc ((s,j')::[]) -> (s, j' |> value_of "declaration" |> to_int)
-         | _ -> raise (Failure "InlineAssembly")
-       ) lst
-     in
-     Assembly (var_refid_pairs, get_loc json) 
-  | `String s -> raise (Failure ("Unsupported: trans_statement- " ^ s))
+     (try
+        let ext_refs = json |> value_of "externalReferences" |> to_list in
+        let var_refid_pairs =
+          List.map (fun j ->
+            match j with
+            | `Assoc ((s,j')::[]) -> (s, j' |> value_of "declaration" |> to_int)
+            | _ -> raise (Failure "InlineAssembly")
+        ) ext_refs in
+        Assembly (var_refid_pairs, loc)
+     with _ ->
+       let var_refid_pairs = trans_yul_block json in
+       Assembly (var_refid_pairs, loc))
+  | `String "UncheckedBlock" -> failwith ("Unsupported: UncheckedBlock, line " ^ string_of_int loc)
+     (* let statements = json |> value_of "statements" |> to_list in
+     List.fold_left (fun acc j ->
+       Seq (acc, trans_statement j)
+     ) Skip statements *)
+  | `String "TryStatement" -> failwith ("Unsupported: TryStatement, line " ^ string_of_int loc)
+  | `String s -> raise (Failure ("Unsupported: trans_statement - " ^ s ^ " : line " ^ string_of_int loc))
   | _ -> assert false
 
 (* nodeType : O *)
@@ -563,21 +675,52 @@ and trans_block : Yojson.Basic.t -> stmt
     Seq (acc, new_stmt)
   ) Skip statements 
 
+(* usual: defined modifiers appear as invocations *)
+(* unusual: consturctor invocations appear as modifiers *)
+let is_usual_modifier: string list -> Yojson.Basic.t -> bool
+= fun cnames json ->
+  let _ = assert (value_of "nodeType" json = `String "ModifierInvocation") in
+  let modname = json |> value_of "modifierName" |> value_of "name" |> to_string in
+  not (List.mem modname cnames)
+
 (* nodeType: O *)
-let trans_modifierInvocation : Yojson.Basic.t -> bool * stmt (* true if mod call, false if cnstr call *)
+let trans_modifierInvocation : Yojson.Basic.t -> mod_call
 = fun json ->
   let _ = assert (value_of "nodeType" json = `String "ModifierInvocation") in
-  let s = json |> value_of "modifierName" |> value_of "typeDescriptions" |> value_of "typeString" |> to_string in
-  let b = BatString.starts_with s "modifier" in
-  let exp = json |> value_of "modifierName" |> trans_expression in
+  let name = json |> value_of "modifierName" |> value_of "name" |> to_string in
   let args = json |> value_of "arguments" |> trans_functionCallArguments in
-  (b, Call (None, exp, args, get_loc json, json |> value_of "id" |> to_int))
+  let loc = get_loc json in
+  (name, args, loc)
+
+(* generate Constructor call *)
+let trans_inheritanceSpecifier : Yojson.Basic.t -> mod_call
+= fun json ->
+  let _ = assert (value_of "nodeType" json = `String "InheritanceSpecifier") in
+  let name = json |> value_of "baseName" |> value_of "name" |> to_string in
+  let args = json |> value_of "arguments" |> trans_functionCallArguments in
+  let loc = get_loc json in
+  (name, args, loc)
+
+let resolve_cnstr_calls : mod_call list -> mod_call list ->
+                          mod_call list
+= fun inherit_calls mod_calls ->
+  (* In solc 0.4x, mod_calls has the priority over the inherit_calls. *)
+  (* In recent solc, specifying arguments for both places is an error. *)
+  (* E.g.,
+   * Inherit: A(5) B(3), Mod: A(8) C(7) => B(3) A(8) C(7) *)
+  let combined = inherit_calls @ mod_calls in
+  let combined = List.rev combined in (* rev list to give the priority to mod_calls *)
+  List.fold_left (fun acc m ->
+    let b = List.exists (fun (x,_,_) -> x = triple_fst m) acc in
+    if b then acc
+    else m::acc
+  ) [] combined
 
 let param_cnt = ref 0
 let param_name = "Param"
 let gen_param_name () =
   param_cnt:=!param_cnt+1;
-  param_name ^ (string_of_int !param_cnt) 
+  param_name ^ (string_of_int !param_cnt)
 
 (* nodeType: O *)
 let trans_parameterList : Yojson.Basic.t -> param list
@@ -593,40 +736,39 @@ let trans_parameterList : Yojson.Basic.t -> param list
   let params = List.rev reversed_params
   in params
 
-(* generate Constructor call *)
-let trans_inheritanceSpecifier : Yojson.Basic.t -> stmt 
-= fun json ->
-  let _ = assert (value_of "nodeType" json = `String "InheritanceSpecifier") in 
-  let name = json |> value_of "baseName" |> value_of "name" |> to_string in
-  let args = json |> value_of "arguments" |> trans_functionCallArguments in
-  Call (None, Lv (Var (name,dummy_vinfo)), args, get_loc json, json |> value_of "id" |> to_int)
+let trans_isConstructor : Yojson.Basic.t -> bool
+= fun j ->
+  let _ = assert (value_of "nodeType" j = `String "FunctionDefinition") in
+  try
+    j |> value_of "isConstructor" |> to_bool (* solc 0.4x *)
+  with _ -> (* solc 0.5x *)
+   (match value_of "kind" j with
+    | `String "constructor" -> true
+    | `String "function" -> false
+    | `String "fallback" -> false
+    | `String "receive" -> false
+    | `String s -> failwith ("trans_isConstructor: " ^ s)
+    | _ -> assert false)
 
-let get_callee_name : stmt -> string
-= fun stmt ->
-  match stmt with
-  | Call (_, Lv (Var (name,_)),_,_,_) -> name
-  | _ -> raise (Failure "get_callee_name")
-
-let resolve_cnstr_calls : stmt list -> stmt list -> stmt
-= fun inherit_calls mod_calls ->
-  (* In solc 0.4x, the latter has the priority over the former. *)
-  (* In recent solc, specifying arguments for both places is an error. *)
-  let mod_names = List.map get_callee_name mod_calls in
-  List.fold_left (fun acc inherit_call ->
-    let name = get_callee_name inherit_call in
-    if List.mem name mod_names then
-      let matching_mod = List.find (fun m -> name = get_callee_name m) mod_calls in
-      Seq (acc, matching_mod)
-    else
-      Seq (acc, inherit_call)
-  ) Skip inherit_calls
+let trans_payable : Yojson.Basic.t -> bool
+= fun j ->
+  let _ = assert (value_of "nodeType" j = `String "FunctionDefinition") in
+  try
+    j |> value_of "payable" |> to_bool (* 0.4x *)
+  with _ -> (* 0.5x *)
+    (match value_of "stateMutability" j with
+     | `String "payable" -> true
+     | `String "nonpayable" -> false
+     | `String "view" -> false
+     | `String "pure" -> false
+     | _ -> failwith "stateMutability")
 
 (* nodeType : O *)
-let trans_contractDefinition : Yojson.Basic.t -> contract 
-= fun json ->
+let trans_contractDefinition : string list -> Yojson.Basic.t -> contract
+= fun cnames json ->
   let cid = json |> value_of "name" |> to_string in
   let contract_parts = json |> value_of "nodes" |> to_list in
-  let cinfo = 
+  let cinfo =
     { numid = json |> value_of "id" |> to_int;
       inherit_order = List.map to_int (json |> value_of "linearizedBaseContracts" |> to_list);
       lib_typ_lst = [];
@@ -636,15 +778,18 @@ let trans_contractDefinition : Yojson.Basic.t -> contract
   let cnstr_calls_inherit =
     List.fold_left (fun acc base ->
       let cnstr_call = trans_inheritanceSpecifier base in
-      acc @ [cnstr_call] (* constructors are called starting from parents *)
+      if List.length (triple_snd cnstr_call) > 0 then
+        acc @ [cnstr_call] (* constructors are called starting from parents *)
+      else acc
     ) [] base_contracts in
+  (* NOTE: lists are stored in a reversed order *)
   let (cid, gvar_decls, structs, enums, func_defs, cinfo) =
     List.fold_left (fun (cid, gvar_decls, structs, enums, func_defs, cinfo) j ->
       let node_typ = value_of "nodeType" j in
       match node_typ with
       | `String "VariableDeclaration" ->
          let (vname,vinfo) = trans_variable_declaration j in
-         let expop = 
+         let expop =
            (match j |> value_of "value" with
             | `Null -> None
             | exp -> Some (trans_expression exp)) in
@@ -656,10 +801,15 @@ let trans_contractDefinition : Yojson.Basic.t -> contract
          let finfo =
            { is_constructor = false;
              is_payable = false;
+             is_modifier = false;
+             mod_list = [];
+             mod_list2 = [];
+             ret_param_loc = (-1);
              fvis = Internal;
              fid = j |> value_of "id" |> to_int;
              scope = cinfo.numid;
              scope_s = cid; (* to be filled by preprocessor *)
+             org_scope_s = cid;
              cfg = empty_cfg
            } in
          let stmt = Skip in
@@ -671,7 +821,7 @@ let trans_contractDefinition : Yojson.Basic.t -> contract
          let enum = (name,members) in
          (cid, gvar_decls, structs, enums@[enum], func_defs, cinfo)
       | `String "StructDefinition" ->
-         let name = j |> value_of "name" |> to_string in 
+         let name = j |> value_of "canonicalName" |> to_string in
          let decls = List.map trans_variable_declaration (j |> value_of "members" |> to_list) in
          let structure = (name,decls) in 
          (cid, gvar_decls, structure::structs, enums, func_defs, cinfo)
@@ -681,62 +831,62 @@ let trans_contractDefinition : Yojson.Basic.t -> contract
          let cinfo = {cinfo with lib_typ_lst = (lib_name,typ)::cinfo.lib_typ_lst} in
          (cid, gvar_decls, structs, enums, func_defs, cinfo)
       | `String "FunctionDefinition" ->
-         let finfo = 
-           { is_constructor =
-               (try j |> value_of "isConstructor" |> to_bool (* 0.4x version *)
-                with _ -> (* 0.5x version *)
-                  (match value_of "kind" j with
-                   | `String "constructor" -> true
-                   | `String "function" -> false
-                   | `String "fallback" -> false
-                   | _ -> failwith "translation error"));
-             is_payable =
-               (try j |> value_of "payable" |> to_bool (* 0.4x *)
-                with _ -> (* 0.5x *)
-                  (match value_of "stateMutability" j with
-                   | `String "payable" -> true
-                   | `String "nonpayable" -> false
-                   | `String "view" -> false
-                   | `String "pure" -> false
-                   | _ -> failwith "stateMutability"));
-             fvis = j |> value_of "visibility" |> trans_visibility;
-             fid = j |> value_of "id" |> to_int;
-             scope = cinfo.numid;
-             scope_s = cid;
-             cfg = empty_cfg
-           } in
-         let fname = if finfo.is_constructor then cid else j |> value_of "name" |> to_string in
+         let is_constructor = trans_isConstructor j in
+         let fname = j |> value_of "name" |> to_string in
+         let fname = if is_constructor then cid else if fname = "" then "@fallback" else fname in
          let params = j |> value_of "parameters" |> trans_parameterList in
-         let ret_params = j |> value_of "returnParameters" |> trans_parameterList in 
+         let ret_params = j |> value_of "returnParameters" |> trans_parameterList in
          let stmt =
            if j |> value_of "implemented" |> to_bool then j |> value_of "body" |> trans_block
-           else Skip (* function without definitions *) in
-         let (mod_calls,cnstr_calls_mod) =
-           let lst = j |> value_of "modifiers" |> to_list in
-           List.fold_left (fun (acc1,acc2) j' ->
-             let (is_modcall, call) = trans_modifierInvocation j' in
-             if is_modcall then (Seq (acc1,call), acc2)
-             else (acc1, acc2 @ [call])
-           ) (Skip,[]) lst in
-         let init_stmt =
-           if not finfo.is_constructor then mod_calls
-           else (* constructor case *)
-             let cnstr_calls = resolve_cnstr_calls cnstr_calls_inherit cnstr_calls_mod in
-             Seq (gvar_init, Seq (cnstr_calls, mod_calls))
+           else Skip (* function without definitions *)
          in
-         let whole = Seq (init_stmt,stmt) in
-         let func = (fname, params, ret_params, whole, finfo) in
-         (cid, gvar_decls, structs, enums, func::func_defs, cinfo)
-      | `String "ModifierDefinition" -> 
-         let fname = j |> value_of "name" |> to_string in
-         let params = j |> value_of "parameters" |> trans_parameterList in
-         let finfo = 
-           { is_constructor = false;
-             is_payable = false;
+         let modifiers = j |> value_of "modifiers" |> to_list in
+         (* executed in the order of usual mod call => constructor mod call *)
+         let mod_calls =
+           List.fold_left (fun acc j' ->
+             if is_usual_modifier cnames j' then acc @ [(trans_modifierInvocation j')]
+             else acc
+           ) [] modifiers
+         in
+         let cnstr_calls_mod =
+           List.fold_left (fun acc j' ->
+             if not (is_usual_modifier cnames j') then acc @ [(trans_modifierInvocation j')]
+             else acc
+           ) [] modifiers
+         in
+         let cnstr_calls = resolve_cnstr_calls cnstr_calls_inherit cnstr_calls_mod in
+         let finfo =
+           { is_constructor = is_constructor;
+             is_payable = trans_payable j;
+             is_modifier = false;
+             mod_list = mod_calls;
+             mod_list2 = if is_constructor then cnstr_calls else [];
+             ret_param_loc = j |> value_of "returnParameters" |> get_loc;
              fvis = j |> value_of "visibility" |> trans_visibility;
              fid = j |> value_of "id" |> to_int;
              scope = cinfo.numid;
              scope_s = cid;
+             org_scope_s = cid;
+             cfg = empty_cfg
+           }
+         in
+         let func = (fname, params, ret_params, stmt, finfo) in
+         (cid, gvar_decls, structs, enums, func::func_defs, cinfo)
+      | `String "ModifierDefinition" ->
+         let fname = j |> value_of "name" |> to_string in
+         let params = j |> value_of "parameters" |> trans_parameterList in
+         let finfo =
+           { is_constructor = false;
+             is_payable = false;
+             is_modifier = true;
+             mod_list = []; (* no modifier invocations in modifier definition *)
+             mod_list2 = []; (* same as above *)
+             ret_param_loc = (-1);
+             fvis = j |> value_of "visibility" |> trans_visibility;
+             fid = j |> value_of "id" |> to_int;
+             scope = cinfo.numid;
+             scope_s = cid;
+             org_scope_s = cid;
              cfg = empty_cfg
            } in
          let stmt = j |> value_of "body" |> trans_block in
@@ -747,23 +897,33 @@ let trans_contractDefinition : Yojson.Basic.t -> contract
   let (gvar_decls, func_defs) = (List.rev gvar_decls, List.rev func_defs) in 
   let b = List.exists (fun (_,_,_,_,finfo) -> finfo.is_constructor) func_defs in
     if b then (cid, gvar_decls, structs, enums, func_defs, cinfo)
-    else (* make a new constructor if does not exist *)
+    else
+      (* make a new constructor if does not exist *)
       let fname = cid in
       let params = [] in
-      let finfo = { is_constructor = true; is_payable = false; fvis = Public; fid = (-1); scope = cinfo.numid; scope_s = cid; cfg = empty_cfg } in
-      let stmt = resolve_cnstr_calls cnstr_calls_inherit [] in
-      let cnstr = (fname, params, [], Seq (gvar_init,stmt), finfo) in
+      let cnstr_calls = resolve_cnstr_calls cnstr_calls_inherit [] in
+      let finfo =
+        {is_constructor = true;
+         is_payable = false;
+         is_modifier = false;
+         mod_list = []; mod_list2 = cnstr_calls; ret_param_loc = (-1);
+         fvis = Public; fid = (-1);
+         scope = cinfo.numid; scope_s = cid; org_scope_s = cid; cfg = empty_cfg}
+      in
+      let cnstr = (fname, params, [], Skip, finfo) in
       (cid, gvar_decls, structs, enums, cnstr::func_defs, cinfo) 
 
 let translate : Yojson.Basic.t -> pgm
 = fun json ->
   let _ = assert (value_of "nodeType" json = `String "SourceUnit") in
   let l = json |> value_of "nodes" |> to_list in (* 0 nodes => `List [] *)
+  let l' = List.filter (fun j -> value_of "nodeType" j = `String "ContractDefinition") l in
+  let cnames = List.map (fun json -> json |> value_of "name" |> to_string) l' in
   List.fold_left (fun acc j ->
     let node_typ = value_of "nodeType" j in
-    (match node_typ with 
+    (match node_typ with
      | `String "ContractDefinition" ->
-       acc @ [trans_contractDefinition j]
+       acc @ [trans_contractDefinition cnames j]
      | _ -> acc) (* Skip PragmaDirectve, and ImportDirective *)
   ) [] l
 

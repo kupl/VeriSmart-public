@@ -58,6 +58,7 @@ let rec has_break_cont : stmt -> bool
   | Break | Continue -> true
   | Return _ | Throw -> false
   | Assume _ | Assert _ | Assembly _ -> false
+  | PlaceHolder -> assert false
 
 let rec trans : stmt -> node option -> node option -> (node * cfg) -> (node * cfg)
 = fun stmt lhop lxop (n,g) -> (* lhop : header of dominant loop, lxop : exit of dominant loop, n: interface node *)
@@ -134,13 +135,14 @@ let rec trans : stmt -> node option -> node option -> (node * cfg) -> (node * cf
     let n' = Node.make () in
     let g' = g |> add_node_stmt n' stmt |> add_edge n n' in
     (n',g')
-  | Assert (e,loc) -> (* assumed to be an atomic predicate *)
+  | Assert (e,_,loc) -> (* assumed to be an atomic predicate *)
     let n' = Node.make () in
     let g' = g |> add_node_stmt n' stmt |> add_edge n n' in
     (n',g')
   | _ -> 
     let n' = Node.make () in
-    (n', g |> add_node_stmt n' stmt |> add_edge n n') 
+    let g' = g |> add_node_stmt n' stmt |> add_edge n n' in
+    (n',g')
 
 (* disconnect edges starting from
  * either of
@@ -213,19 +215,24 @@ let rec double_loop : stmt -> stmt
   | Seq (s1,s2) -> Seq (double_loop s1, double_loop s2)
   | Call _ | Skip -> stmt
   | If (e,s1,s2) -> If (e, double_loop s1, double_loop s2)
+  (* While (e) {s} ->
+   * While (e) {s}; While (e) {s} ->
+   * unroll each while-loop once. *)
   | While (e,s) ->
     let s' = double_loop s in
     Seq (While (e,s'), While (e,s'))
   | Break | Continue | Return _
-  | Throw | Assume _ | Assert _ | Assembly _ -> stmt
+  | Throw | Assume _ | Assert _ | Assembly _ | PlaceHolder -> stmt
 
 let convert : stmt -> cfg
 = fun stmt ->
+  let stmt = match !Options.mode with "exploit" -> double_loop stmt | _ -> stmt in
   let (n,g) = trans stmt None None (Node.entry, Lang.empty_cfg) in
   let g = add_edge n Node.exit g in
   let g = disconnect g in
   let g = remove_unreach g in
   let g = inspect_lh g in
+  let g = match !Options.mode with "exploit" -> unroll g | _ -> g in
   g
 
 let run : pgm -> pgm

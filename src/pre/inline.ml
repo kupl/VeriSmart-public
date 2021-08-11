@@ -20,84 +20,18 @@ let postprocess : cfg -> cfg
   in
   remove_unreach g'
 
-let rec rename_lv : var list -> lv -> lv
-= fun gvars lv ->
-  match lv with
-  | Var (id,vinfo) ->
-    if List.mem (id,vinfo.vtype) gvars then lv
-    else Var (id ^ inline_label(), vinfo)
-  | MemberAccess (e,id,id_info,typ) when is_enum typ -> lv
-  | MemberAccess (e,id,id_info,typ) -> MemberAccess (rename_e gvars e, id, id_info, typ) 
-  | IndexAccess (e,None,_) -> raise (Failure "rename_lv")
-  | IndexAccess (e1,Some e2,typ) -> IndexAccess (rename_e gvars e1, Some (rename_e gvars e2), typ)
-  | Tuple (eoplst,typ) ->
-    let eoplst' = 
-      List.map (fun eop ->
-        match eop with
-        | None -> None
-        | Some e -> Some (rename_e gvars e)
-      ) eoplst
-    in
-    Tuple (eoplst',typ)
-
-and rename_e : var list -> exp -> exp
-= fun gvars exp ->
-  match exp with
-  | Int _ | Real _ | Str _ -> exp
-  | Lv lv ->
-    if List.mem (to_string_lv lv) Lang.keyword_vars then Lv lv
-    else Lv (rename_lv gvars lv)
-  | Cast (typ,e) -> Cast (typ, rename_e gvars e)
-  | BinOp (bop,e1,e2,einfo) -> BinOp (bop, rename_e gvars e1, rename_e gvars e2, einfo)
-  | UnOp (uop,e,typ) -> UnOp (uop, rename_e gvars e, typ)
-  | True | False -> exp
-  | ETypeName _ -> exp 
-  | IncTemp _ | DecTemp _ | CallTemp _
-  | CondTemp _ | AssignTemp _ -> raise (Failure "rename_e")
-
-let rec rename_stmt : func -> var list -> id list -> Node.t -> stmt -> stmt
-= fun callee gvars cnames copy_node stmt ->
+let rename_stmt' : func -> var list -> id list -> stmt -> stmt
+= fun callee gvars cnames stmt ->
+  let lab = inline_label () in
   match stmt with
-  | Assign (lv,exp,loc) -> Assign (rename_lv gvars lv, rename_e gvars exp, loc)
-  | Decl lv -> Decl (rename_lv gvars lv)
-  | Call (lvop, e, exps, loc, site) ->
-    let lvop' =
-      (match lvop with
-       | None -> lvop
-       | Some lv -> Some (rename_lv gvars lv)) in
-    let e' =
-      (match e with
-       | e when List.mem (to_string_exp e) built_in_funcs -> e
-       | Lv (Var (fname,info)) -> e
-       | Lv (MemberAccess (Lv (Var (prefix,prefix_info)) as arr, fname, fname_info, typ)) ->
-         if List.mem prefix cnames || BatString.equal prefix "super" then e
-         else Lv (MemberAccess (rename_e gvars arr, fname, fname_info, typ))
-       | _ -> e) in
-    let exps' =
-      if BatString.equal (to_string_exp e) "struct_init" || BatString.equal (to_string_exp e) "contract_init"
-        then (List.hd exps)::(List.map (rename_e gvars) (List.tl exps)) (* Rule: the first arg is struct/contract name, see preprocess.ml *)
-      else List.map (rename_e gvars) exps in
-    Call (lvop', e', exps', loc, site)
-  | Skip -> Skip
   | Return (None,_) -> Skip
   | Return (Some e,loc) ->
     let ret_params = get_ret_params callee in
     let lv = params_to_lv ret_params in
-    Assign (rename_lv gvars lv, rename_e gvars e, loc)
-  | Throw -> Throw
-  | Assume (e,loc) -> Assume (rename_e gvars e, loc)
-  | Assert (e,loc) -> Assert (rename_e gvars e, loc)
-  | Assembly (lst,loc) ->
-    let gnames = List.map fst gvars in
-    let lst' =
-      List.map (fun (x,refid) ->
-        if List.mem x gnames then (x,refid)
-        else (x ^ inline_label (), refid) 
-      ) lst
-    in
-    Assembly (lst',loc)
+    Assign (rename_lv lab gvars lv, rename_e lab gvars e, loc)
   | If _ | Seq _ | While _
-  | Break | Continue -> failwith "rename_stmt"
+  | Break | Continue -> failwith "rename_stmt'"
+  | _ -> rename_stmt lab gvars cnames stmt
 
 let replace_node : Node.t -> (Node.t * stmt) -> cfg -> cfg
 = fun target (new_node,new_stmt) g ->
@@ -115,7 +49,7 @@ let copy_node : func -> var list -> id list -> Node.t -> cfg -> cfg
   if is_exit node then g
   else
     let copied_node = Node.make () in
-    let copied_stmt = rename_stmt callee gvars cnames copied_node (find_stmt node g) in
+    let copied_stmt = rename_stmt' callee gvars cnames (find_stmt node g) in
     let g' = replace_node node (copied_node, copied_stmt) g in
     { g' with pre_set = if BatSet.mem node g.pre_set then BatSet.add copied_node g'.pre_set else g'.pre_set;
               lh_set = if BatSet.mem node g.lh_set then BatSet.add copied_node g'.lh_set else g'.lh_set;
@@ -149,10 +83,10 @@ let inline_n : var list -> id list -> FuncMap.t -> func -> Node.t -> cfg ->
 = fun gvars cnames fmap caller n g ->
   let stmt = find_stmt n g in
   match stmt with
-  | Call (lvop,e,args,loc,_)
+  | Call (lvop,e,args,_,_,loc,_)
     when FuncMap.is_undef e (List.map get_type_exp args) fmap ->
     (false, g) (* built-in functions *)
-  | Call (lvop,e,args,loc,_) when is_static_call cnames stmt ->
+  | Call (lvop,e,args,_,_,loc,_) when is_static_call cnames stmt ->
     let cname = (get_finfo caller).scope_s in
     let callees = FuncMap.find_matching_funcs cname e (List.map get_type_exp args) cnames fmap in
     let _ = assert (BatSet.cardinal callees = 1) in
@@ -164,9 +98,9 @@ let inline_n : var list -> id list -> FuncMap.t -> func -> Node.t -> cfg ->
       ) g 0 in
     let _ = if !Options.debug = "inline" then print_endline (get_fname callee ^ ", " ^ string_of_int (size_of (get_cfg callee))) in
     let excessive = size_of (get_cfg callee) > 20 || has_loop (get_cfg callee) in
-    if excessive && not !Options.inline_enforce then (false, g)
+    if not (!Options.mode="exploit") && excessive && not !Options.inline_enforce then (false, g)
     else
-      (* Do inlining, if not excessive *)
+      (* Do inlining, if exploit mode or not excessive *)
       let _ = update_inline_cnt () in
       let (callee_e, callee_x, callee_g) = mk_cfg_copy callee gvars cnames (get_cfg callee) in
       let preds = pred n g in
@@ -175,7 +109,7 @@ let inline_n : var list -> id list -> FuncMap.t -> func -> Node.t -> cfg ->
       let input_node = Node.make () in
       let input_stmt = (* input_params <- args *)
         try
-         let lv = rename_lv gvars (params_to_lv (get_params callee)) in 
+         let lv = rename_lv (inline_label()) gvars (params_to_lv (get_params callee)) in
          Assign (lv, args_to_exp args, loc)
         with NoParameters -> Skip
       in 
@@ -194,7 +128,7 @@ let inline_n : var list -> id list -> FuncMap.t -> func -> Node.t -> cfg ->
         (match lvop with
          | None -> Skip
          | Some lv -> (* lv <- ret_params when 'lv:= call()' *)
-           let e = rename_e gvars (Lv (params_to_lv (get_ret_params callee))) in
+           let e = rename_e (inline_label()) gvars (Lv (params_to_lv (get_ret_params callee))) in
            Assign (lv,e,loc))
       in
       let g = add_node_stmt ret_node ret_stmt g in
@@ -258,7 +192,7 @@ let rec inline_all : pgm -> pgm
 let is_target_node cnames fmap n g =
   let stmt = find_stmt n g in
   match stmt with
-  | Call (lvop,e,args,loc,_) when (FuncMap.is_undef e (List.map get_type_exp args) fmap) -> false
+  | Call (lvop,e,args,_,_,loc,_) when (FuncMap.is_undef e (List.map get_type_exp args) fmap) -> false
   | Call _ -> is_static_call cnames stmt
   | _ -> false
 
@@ -285,7 +219,9 @@ let remove_call_p p =
 let rec inline_ntimes : int -> pgm -> pgm
 = fun n p ->
   let _ = assert (n>=0) in
-  if n=0 then p
+  if n=0 then
+    if !Options.mode="exploit" then remove_call_p p
+    else p
   else
     let (changed,p') = inline_p p in
     if not changed then p'

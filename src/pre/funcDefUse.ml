@@ -36,19 +36,24 @@ let to_string : t -> string
 let eq m1 m2 = BatString.equal (to_string m1) (to_string m2) 
 
 let rec get_def_set_lv : lv -> id BatSet.t
-= fun lv -> 
+= fun lv ->
   match lv with
-  | Var (id,_) -> BatSet.singleton id 
-  | MemberAccess (e,x,xinfo,_) -> BatSet.singleton (x) 
+  | Var (id,vinfo) -> BatSet.singleton id
+  | MemberAccess (e,"length",info,_) -> BatSet.singleton "@L"
+  | MemberAccess (e,"balance",info,_) ->
+    let _ = assert (info.vtype = EType (UInt 256)) in
+    let _ = assert (is_address (get_type_exp e)) in
+    BatSet.singleton "@B"
+  | MemberAccess (e,x,xinfo,_) -> BatSet.singleton x
   | IndexAccess (Lv lv,_,_) -> get_def_set_lv lv
-  | IndexAccess (Cast (_, Lv lv),_,_) -> get_def_set_lv lv 
-  | Tuple (eops,_) -> 
+  | IndexAccess (Cast (_, Lv lv),_,_) -> get_def_set_lv lv
+  | Tuple (eops,_) ->
     List.fold_left (fun acc eop ->
       match eop with
       | Some (Lv lv) -> BatSet.union (get_def_set_lv lv) acc
       | None -> acc
       | _ -> failwith "get_defs_lv"
-    ) BatSet.empty eops 
+    ) BatSet.empty eops
   | _ -> failwith "get_defs_lv"
 
 let get_def_set_n : id list -> FuncMap.t -> t -> Node.t -> cfg -> id BatSet.t
@@ -58,12 +63,12 @@ let get_def_set_n : id list -> FuncMap.t -> t -> Node.t -> cfg -> id BatSet.t
   match stmt with
   | Assign (lv,_,_) -> get_def_set_lv lv
   | Decl lv -> get_def_set_lv lv
-  | Call (lvop,e,args,loc,_) (* built-in functions *)
+  | Call (lvop,e,args,_,_,loc,_) (* built-in functions *)
     when FuncMap.is_undef e (List.map get_type_exp args) fmap ->
     (match lvop with
      | Some lv -> get_def_set_lv lv
      | None -> BatSet.empty)
-  | Call (lvop,e,args,loc,_) -> (* normal calls *)
+  | Call (lvop,e,args,_,_,loc,_) -> (* normal calls *)
     let init =
       (match lvop with
        | Some lv -> get_def_set_lv lv
@@ -75,9 +80,10 @@ let get_def_set_n : id list -> FuncMap.t -> t -> Node.t -> cfg -> id BatSet.t
     ) callees init
   | Assembly (lst,_) -> BatSet.map fst (BatSet.of_list lst) (* conservative result *)
   | Skip | Return _ | Throw | Assume _ | Assert _ -> BatSet.empty
+  | PlaceHolder -> BatSet.empty
   | If _ | Seq _ | While _ | Break | Continue -> failwith "get_defs"
 
-let get_use_set_n : id list -> FuncMap.t -> t -> Node.t -> cfg -> id BatSet.t 
+let get_use_set_n : id list -> FuncMap.t -> t -> Node.t -> cfg -> id BatSet.t
 = fun cnames fmap fsum n g ->
   let (cname,_,_) = g.signature in
   let stmt = find_stmt n g in
@@ -87,13 +93,13 @@ let get_use_set_n : id list -> FuncMap.t -> t -> Node.t -> cfg -> id BatSet.t
     let lv_use = BatSet.diff (BatSet.map fst (var_lv lv)) (get_def_set_lv lv) in
     BatSet.union lv_use (BatSet.map fst (var_exp e))
   | Decl lv -> BatSet.empty
-  | Call (lvop,e,args,loc,_) (* built-in functions *)
+  | Call (lvop,e,args,_,_,loc,_) (* built-in functions *)
     when FuncMap.is_undef e (List.map get_type_exp args) fmap ->
     List.fold_left (fun acc e ->
       let use_ids = BatSet.map fst (var_exp e) in
       BatSet.union use_ids acc
     ) BatSet.empty args
-  | Call (lvop,e,args,loc,_) -> (* normal calls *)
+  | Call (lvop,e,args,_,_,loc,_) -> (* normal calls *)
     let init1 =
       (match lvop with
        | Some lv ->
@@ -119,8 +125,9 @@ let get_use_set_n : id list -> FuncMap.t -> t -> Node.t -> cfg -> id BatSet.t
      | Some e -> BatSet.map fst (var_exp e))
   | Throw -> BatSet.empty
   | Assume (e,_) -> BatSet.map fst (var_exp e)
-  | Assert (e,_) -> BatSet.map fst (var_exp e)
+  | Assert (e,_,_) -> BatSet.map fst (var_exp e)
   | Assembly (lst,_) -> BatSet.map fst (BatSet.of_list lst) (* conservative result *)
+  | PlaceHolder -> BatSet.empty
   | If _ | Seq _ | While _ | Break | Continue -> failwith "get_uses"
   in
   BatSet.filter (fun x -> not (List.mem x keyword_vars)) res
@@ -131,10 +138,10 @@ let get_use_set_n_assume : id list -> FuncMap.t -> t -> Node.t -> cfg -> id BatS
   let stmt = find_stmt n g in
   let res =
   match stmt with
-  | Call (lvop,e,args,loc,_) (* built-in functions *)
+  | Call (lvop,e,args,_,_,loc,_) (* built-in functions *)
     when FuncMap.is_undef e (List.map get_type_exp args) fmap ->
     BatSet.empty
-  | Call (lvop,e,args,loc,_) -> (* normal calls *)
+  | Call (lvop,e,args,_,_,loc,_) -> (* normal calls *)
     let callees = FuncMap.find_matching_funcs cname e (List.map get_type_exp args) cnames fmap in
     BatSet.fold (fun callee acc ->
       BatSet.union (find_use_set_assume (get_fkey callee) fsum) acc

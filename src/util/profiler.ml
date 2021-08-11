@@ -1,7 +1,10 @@
 let local_start = ref 0.0
 
-let start_time = ref (Sys.time ()) (* global start time *)
-let end_time = ref 0.0 (* global end time *)
+let start_cpu = ref (Sys.time ())
+let start_real = ref (Unix.gettimeofday ())
+
+let end_cpu = ref 0.0
+let end_real = ref 0.0
 
 let start : string -> unit
 = fun s ->
@@ -16,3 +19,6 @@ let finish : string -> unit
 
 let print_log : string -> unit
 = fun s -> prerr_endline s
+
+let run : string -> 'a -> 'a
+= fun log f -> (print_endline log; f)

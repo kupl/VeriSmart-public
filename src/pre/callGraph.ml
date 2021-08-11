@@ -2,73 +2,95 @@ open Lang
 open Vocab
 open FuncMap
 
-let compute_call_edges_n : id list -> FuncMap.t -> Node.t -> cfg -> (fkey * fkey) BatSet.t
-= fun cnames fmap n g ->
-  let (cname,_,_) = g.signature in
-  let stmt = find_stmt n g in
+type edge = fkey * fkey
+
+let to_string_edge (k1,k2) = to_string_fkey k1 ^ " -> " ^ to_string_fkey k2
+let to_string_edges edges = string_of_set ~first:"[" ~last:"]" ~sep:",\n" to_string_edge edges
+let print_edges edges = print_endline (to_string_edges edges)
+
+let edges_n : id list -> FuncMap.t -> func -> Node.t -> edge BatSet.t -> edge BatSet.t
+= fun cnames fmap curf node edges ->
+  let stmt = find_stmt node (Lang.get_cfg curf) in
   match stmt with
-  | Call (_,Lv (Var ("contract_init",_)),args,_,_) ->
+  | Call (_,Lv (Var ("contract_init",_)),args,_,_,_,_) ->
     let cnstr_exp, cnstr_args = List.hd args, List.tl args in
     let _ = assert (List.mem (to_string_exp cnstr_exp) cnames) in
-    let callees = find_matching_funcs (to_string_exp cnstr_exp) cnstr_exp (List.map get_type_exp cnstr_args) cnames fmap in
+    let callees = FuncMap.find_matching_funcs (to_string_exp cnstr_exp) cnstr_exp (List.map get_type_exp cnstr_args) cnames fmap in
     let _ = assert (BatSet.cardinal callees = 1) in
     let callee = BatSet.choose callees in
-    BatSet.singleton (g.signature, get_fkey callee)
-  | Call (_,e,args,_,_)
+    BatSet.add (get_fkey curf, get_fkey callee) edges
+  | Call (lvop,e,args,ethop,gasop,loc,_) (* built-in functions *)
     when FuncMap.is_undef e (List.map get_type_exp args) fmap ->
-    BatSet.empty
-  | Call (_,e,args,loc,_) ->
-    let callees = find_matching_funcs cname e (List.map get_type_exp args) cnames fmap in
+    edges
+  | Call (_,e,args,_,_,loc,_) -> (* static or object calls *)
+    let caller_cname = (get_finfo curf).scope_s in
+    let callees = FuncMap.find_matching_funcs caller_cname e (List.map get_type_exp args) cnames fmap in
     BatSet.fold (fun callee acc ->
-      BatSet.add (g.signature, get_fkey callee) acc 
-    ) callees BatSet.empty
-  | _ -> BatSet.empty
+      BatSet.add (get_fkey curf, get_fkey callee) acc
+    ) callees edges
+  | _ -> edges
 
-let compute_call_edges_f : id list -> FuncMap.t -> func -> (fkey * fkey) BatSet.t
-= fun cnames fmap f ->
-  let g = get_cfg f in
-  let nodes = nodes_of g in
-  List.fold_left (fun acc n ->
-    BatSet.union (compute_call_edges_n cnames fmap n g) acc 
-  ) BatSet.empty nodes
+let rec edges_s : id list -> FuncMap.t -> func -> stmt -> edge BatSet.t -> edge BatSet.t
+= fun cnames fmap curf stmt edges ->
+  match stmt with
+  | Assign _ | Decl _ -> edges
+  | Seq (s1,s2) -> edges |> edges_s cnames fmap curf s1 |> edges_s cnames fmap curf s2
+  | Call (lvop,e,args,ethop,gasop,loc,_) (* built-in functions *)
+    when FuncMap.is_undef e (List.map get_type_exp args) fmap -> edges
+  | Call (_,e,args,_,_,loc,_) -> (* static or object calls *)
+    let caller_cname = (get_finfo curf).scope_s in
+    let callees = FuncMap.find_matching_funcs caller_cname e (List.map get_type_exp args) cnames fmap in
+    BatSet.fold (fun callee acc ->
+      BatSet.add (get_fkey curf, get_fkey callee) acc
+    ) callees edges
+  | Skip -> edges
+  | If (e,s1,s2) -> edges |> edges_s cnames fmap curf s1 |> edges_s cnames fmap curf s2
+  | While (e,s) -> edges_s cnames fmap curf s edges
+  | Break | Continue | Return _
+  | Throw | Assume _ | Assert _
+  | Assembly _ | PlaceHolder -> edges
 
-let compute_call_edges_c : id list -> FuncMap.t -> contract -> (fkey * fkey) BatSet.t
-= fun cnames fmap c ->
-  let funcs = get_funcs c in
-  List.fold_left (fun acc f ->
-    BatSet.union (compute_call_edges_f cnames fmap f) acc 
-  ) BatSet.empty funcs
+let edges_f ?(inlined_cfg=true) : id list -> FuncMap.t -> func -> edge BatSet.t -> edge BatSet.t
+= fun cnames fmap f edges ->
+  if inlined_cfg then
+    let nodes = nodes_of (get_cfg f) in
+    list_fold (edges_n cnames fmap f) nodes edges
+  else
+    edges_s cnames fmap f (get_body f) edges
 
-let compute_call_edges_p : id list -> FuncMap.t -> pgm -> (fkey * fkey) BatSet.t
+let edges_c ?(inlined_cfg=true) : id list -> FuncMap.t -> contract -> edge BatSet.t -> edge BatSet.t
+= fun cnames fmap c edges ->
+  list_fold (edges_f ~inlined_cfg cnames fmap) (get_funcs c) edges
+
+let edges_p ?(inlined_cfg=true) : id list -> FuncMap.t -> pgm -> edge BatSet.t
 = fun cnames fmap p ->
-  List.fold_left (fun acc c ->
-    BatSet.union (compute_call_edges_c cnames fmap c) acc
-  ) BatSet.empty p
+  list_fold (edges_c ~inlined_cfg cnames fmap) p BatSet.empty
 
-let compute_call_edges : id list -> FuncMap.t -> pgm -> (fkey * fkey) BatSet.t
-= fun cnames fmap p -> compute_call_edges_p cnames fmap p
+let collect_call_edges ?(inlined_cfg=true) : id list -> FuncMap.t -> pgm -> edge BatSet.t
+= fun cnames fmap p ->
+  edges_p ~inlined_cfg cnames fmap p
 
 let init_callees : pgm -> fkey BatSet.t
 = fun p ->
   let main = get_main_contract p in
-  let funcs = List.filter (fun f -> (get_finfo f).fvis = Public || (get_finfo f).fvis = External || is_constructor f) (get_funcs main) in 
+  let funcs = List.filter (fun f -> (get_finfo f).fvis = Public || (get_finfo f).fvis = External || is_constructor f) (get_funcs main) in
   BatSet.of_list (List.map get_fkey funcs)
 
-let onestep_callees : fkey BatSet.t -> (fkey * fkey) BatSet.t -> fkey BatSet.t
+let onestep_callees : fkey BatSet.t -> edge BatSet.t -> fkey BatSet.t
 = fun callees edges ->
   BatSet.fold (fun (k1,k2) acc ->
     if BatSet.mem k1 callees then BatSet.add k2 acc
     else acc
   ) edges callees
 
-let rec compute_trans_callees : fkey BatSet.t -> (fkey * fkey) BatSet.t -> fkey BatSet.t
+let rec transitive : fkey BatSet.t -> edge BatSet.t -> fkey BatSet.t
 = fun callees edges ->
   let callees' = onestep_callees callees edges in
-    if BatSet.subset callees' callees then callees'
-    else compute_trans_callees callees' edges
+  if BatSet.subset callees' callees then callees'
+  else transitive callees' edges
   
 let compute_reachable_funcs : id list -> FuncMap.t -> pgm -> fkey BatSet.t
-= fun cnames fmap p -> compute_trans_callees (init_callees p) (compute_call_edges cnames fmap p)
+= fun cnames fmap p -> transitive (init_callees p) (collect_call_edges cnames fmap p)
 
 let rm_unreach_c : fkey BatSet.t -> contract -> contract
 = fun reachable c ->

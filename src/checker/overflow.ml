@@ -58,8 +58,8 @@ let gen_safety_cond_src : exp -> exp
        let sc5 = mk_ge (Int (BatBig_int.of_int 256)) e1 in
        let sc6 = mk_ge (Int (BatBig_int.of_int 31)) e2 in
        mk_or (mk_and sc1 sc2) (mk_or (mk_and sc3 sc4) (mk_and sc5 sc6))
-     | ShiftL -> mk_ge exp e1
-     | ShiftR -> mk_ge e1 exp
+     (* | ShiftL -> mk_ge exp e1
+     | ShiftR -> mk_ge e1 exp *)
      | _ -> failwith "gen_safety_cond_src")
   | _ -> failwith "gen_safety_cond_src2"
 
@@ -73,20 +73,20 @@ let rec collect_queries_exp : vformula -> Path.t -> exp -> query list
   | BinOp (bop,e1,e2,einfo) ->
     let lst = List.rev_append (collect_queries_exp vf path e1) (collect_queries_exp vf path e2) in
     (match bop with
-     | Add | Sub | Mul | Exponent | ShiftL | ShiftR ->
+     | Add | Sub | Mul | Exponent when !check_io ->
        if einfo.eloc < 0 then lst (* do not collect queries from generated test harness *)
        else
          let sc = gen_safety_cond exp in
          let sc_src = to_string_exp ~report:true (gen_safety_cond_src exp) in
          let vc = Imply (vf, sc) in
-         {vc=vc; vc2=sc; kind=IO; loc=einfo.eloc; org_q=Org_Exp exp; path=path; src_f=Path.get_fkey path; sc_src=sc_src}::lst
-     | Div | Mod ->
+         {vc=vc; vc2=sc; kind=IO; loc=einfo.eloc; org_q=Org_Exp exp; path=path; src_f=Path.get_fkey path; sc_src=sc_src; attacker_src=""; eth_src=""}::lst
+     | Div | Mod when !check_dz ->
        if einfo.eloc < 0 then lst (* do not collect queries from generated test harness *)
        else
          let sc = gen_safety_cond exp in
          let sc_src = to_string_exp ~report:true (gen_safety_cond_src exp) in
          let vc = Imply (vf, sc) in
-         {vc=vc; vc2=sc; kind=DZ; loc=einfo.eloc; org_q=Org_Exp exp; path=path; src_f=Path.get_fkey path; sc_src=sc_src}::lst
+         {vc=vc; vc2=sc; kind=DZ; loc=einfo.eloc; org_q=Org_Exp exp; path=path; src_f=Path.get_fkey path; sc_src=sc_src; attacker_src=""; eth_src=""}::lst
      | _ -> lst)
   | ETypeName _ -> []
   | _ -> raise (Failure ("collect_queries_exp (tmp expressions encountered) : " ^ to_string_exp exp))
@@ -111,12 +111,12 @@ let collect_queries : vformula -> Path.t -> stmt -> query list
   | Assign (lv,e,_) ->
     (collect_queries_lv vf path lv) @ (collect_queries_exp vf path e)
   | Decl lv -> collect_queries_lv vf path lv
-  | Call (None,e,elst,_,_) ->
+  | Call (None,e,elst,_,_,_,_) ->
     (collect_queries_exp vf path e) @
     List.fold_left (fun acc e' ->
       acc@(collect_queries_exp vf path e')
     ) [] elst
-  | Call (Some lv,e,elst,_,_) ->
+  | Call (Some lv,e,elst,_,_,_,_) ->
     (collect_queries_lv vf path lv) @
     (collect_queries_exp vf path e) @
     List.fold_left (fun acc e' ->
@@ -127,6 +127,7 @@ let collect_queries : vformula -> Path.t -> stmt -> query list
   | Return (Some e,_) -> collect_queries_exp vf path e
   | Throw -> []
   | Assume (e,_) -> collect_queries_exp vf path e
-  | Assert (e,loc) -> collect_queries_exp vf path e
+  | Assert (e,_,loc) -> collect_queries_exp vf path e
   | Assembly _ -> []
-  | Seq _ | If _ | While _ | Break | Continue -> raise (Failure "collect_queries")
+  | Seq _ | If _ | While _ | Break | Continue | PlaceHolder ->
+    failwith ("overflow:collect_queries : " ^ to_string_stmt stmt)

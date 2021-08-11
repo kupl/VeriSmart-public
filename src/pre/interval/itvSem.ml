@@ -26,7 +26,7 @@ let rec eval_aexp : exp -> Mem.t -> Val.t
   | BinOp (bop,e1,e2,einfo) ->
     let v1,v2 = eval_aexp e1 mem, eval_aexp e2 mem in
     eval_bop bop v1 v2
-  | _ -> raise (Failure ("eval_aexp : tmp expressions should not exist."))
+  | _ -> failwith ("eval_aexp : " ^ to_string_exp e) (* tmp expressions should not exist. *)
 
 and eval_uop : uop -> Val.t -> Val.t
 = fun uop v ->
@@ -55,6 +55,7 @@ and loc_of : lv -> Loc.t
 = fun lv ->
   match lv with
   | Var (id,vinfo) -> (id, vinfo.vtype)
+  | MemberAccess (Cast(EType Address, Lv lv),x,xinfo,_) -> loc_of lv (* address(this).balance *)
   | MemberAccess (Lv lv,x,xinfo,_) -> loc_of lv
   | IndexAccess (Lv lv,_,_) -> loc_of lv
   | _ -> raise (Failure ("loc_of in itvSem.ml : " ^ (to_string_lv lv)))
@@ -86,7 +87,7 @@ let rec assign (lv,e) mem =
       match eop1,eop2 with
       | Some (Lv lv'),Some e' -> assign (lv',e') acc
       | None,Some e' -> acc
-      | _ -> raise (Failure "invalid tuple assignment1")
+      | _ -> failwith "itvSem.ml : invalid tuple assignment"
     ) mem eops1 eops2
   | _ -> update (loc_of lv) (eval_aexp e mem) mem
 
@@ -111,19 +112,7 @@ let handle_fcall global caller (lvop,e,args) mem =
 
 let handle_init_funcs global ctx_cname (lvop,f,args) loc mem =
   match lvop with
-  | None ->
-    (match f with
-     | "mapping_init" | "mapping_init2" ->
-       let _ = assert (List.length args = 1) in
-       let loc = BatSet.choose (var_exp (List.hd args)) in
-       update loc (Itv (V zero, V zero), GTaint.bot, BTaint.bot) mem
-     | "array_decl"
-     | "dummy_init" ->
-       let vars = List.fold_left (fun acc arg -> BatSet.union (var_exp arg) acc) BatSet.empty args in
-       BatSet.fold (fun loc acc ->
-         update loc (Itv.top, GTaint.bot, BTaint.bot) acc
-       ) vars mem
-     | _ -> raise (Failure ("handle_init_funcs1: " ^ f)))
+  | None -> raise (Failure ("handle_init_funcs1: " ^ f))
   | Some lv ->
     (match f with
      | "array_init"
@@ -143,9 +132,8 @@ let handle_abi (lvop,f,args) mem =
   | Some lv -> 
     (match f with
      | "encode" | "decode" | "encodePacked" | "encodeWithSelector" | "encodeWithSignature" ->
-        let lub = List.fold_left (fun acc e -> Val.join acc (eval_aexp e mem)) Val.bot args in 
-        let v = Val.update_itv Itv.top lub in 
-        update (loc_of lv) v mem 
+        let v = (Itv.top, GTaint.bot, BTaint.bot) in
+        update (loc_of lv) v mem
      | _ -> raise (Failure "handle_abi"))
 
 let handle_undefs global ctx_cname (lvop,exp,args) loc mem =
@@ -153,15 +141,21 @@ let handle_undefs global ctx_cname (lvop,exp,args) loc mem =
   | Lv (Var (f,_)) when List.mem f Lang.init_funcs ->
     handle_init_funcs global ctx_cname (lvop,f,args) loc mem
   | Lv (MemberAccess (Lv (Var ("abi",_)),f,_,_)) ->
-    handle_abi (lvop,f,args) mem 
-  | _ ->
-    (* same as 'handle_abi' *)
+    handle_abi (lvop,f,args) mem
+  | _ -> (* similar as 'handle_abi' *)
     (match lvop with
      | None -> mem
      | Some lv ->
-       let lub = List.fold_left (fun acc e -> Val.join acc (eval_aexp e mem)) Val.bot args in 
-       let v = Val.update_itv Itv.top lub in 
-       update (loc_of lv) v mem) 
+       let v = (Itv.top, GTaint.bot, BTaint.bot) in
+       (match lv with
+        | Tuple (eops,_) ->
+          List.fold_left (fun acc eop ->
+            match eop with
+            | Some (Lv lv') -> update (loc_of lv') v acc
+            | None -> acc
+            | _ -> assert false
+          ) mem eops
+        | _ -> update (loc_of lv) v mem))
 
 let eval_stmt : Global.t -> id -> func -> Node.t -> Mem.t -> Mem.t
 = fun global main_name func node mem ->
@@ -170,20 +164,34 @@ let eval_stmt : Global.t -> id -> func -> Node.t -> Mem.t -> Mem.t
   match stmt with
   | Assign (lv,e,_) -> assign (lv,e) mem
   | Decl lv ->
-    update (loc_of lv) (Itv (V zero, V zero), GTaint.bot, BTaint.bot) mem
-  | Call (lvop,e,args,loc,_) (* built-in functions *)
+    if is_uintkind (get_type_lv lv) || is_sintkind (get_type_lv lv) then
+      update (loc_of lv) (Itv (V zero, V zero), GTaint.bot, BTaint.bot) mem
+    else
+      update (loc_of lv) (Itv.top, GTaint.bot, BTaint.bot) mem
+  | Call (lvop,e,args,_,_,loc,_) (* built-in functions *)
     when FuncMap.is_undef e (List.map get_type_exp args) global.fmap ->
-    handle_undefs global ctx_cname (lvop,e,args) loc mem 
-  | Call (lvop,e,args,loc,_) -> (* normal calls *)
+    handle_undefs global ctx_cname (lvop,e,args) loc mem
+  | Call (lvop,e,args,_,_,loc,_) -> (* normal calls *)
     handle_fcall global func (lvop,e,args) mem
   | Return (None,_) -> mem
-  | Return (Some e,_) -> (* ret_params <- e *)
+  | Return (Some e, line) -> (* ret_params <- e *)
     let ret_params = get_ret_params func in
     let lv = try params_to_lv ret_params with _ -> assert false in
     if BatString.equal (get_finfo func).scope_s main_name then
       assign (lv, e) mem
     else
-      update (loc_of lv) (Itv.top, GTaint.bot, BTaint.bot) mem
+      let rec assign' lv mem =
+        match lv with
+        | Var _ | IndexAccess _ | MemberAccess _ ->
+          update (loc_of lv) (Itv.top, GTaint.bot, BTaint.bot) mem
+        | Tuple (eops,_) ->
+          List.fold_left (fun acc eop ->
+            match eop with
+            | Some (Lv lv') -> assign' lv' acc
+            | Some _ -> failwith "itvSem.ml : invalid tuple assignment2"
+            | None -> acc
+          ) mem eops in
+      assign' lv mem
   | Assembly (lst,_) ->
     let lst = List.map fst lst in
     Mem.map (fun (x,t) v ->
@@ -192,4 +200,5 @@ let eval_stmt : Global.t -> id -> func -> Node.t -> Mem.t -> Mem.t
       else v 
     ) mem
   | Skip | Throw | Assume _ | Assert _  -> mem
-  | If _ | Seq _ | While _ | Break | Continue -> raise (Failure "eval_stmt")
+  | If _ | Seq _ | While _ | Break | Continue | PlaceHolder ->
+    failwith ("itSem:eval_stmt : " ^ to_string_stmt stmt)

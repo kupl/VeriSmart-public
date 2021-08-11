@@ -15,6 +15,7 @@ let rec eval_ve : vexp -> Mem.t -> Val.t
   | VCast (t,e) -> eval_ve e mem
   | VCond f -> Val.of_itv Itv.top
   | Ite (e1,e2,e3) -> Val.of_itv Itv.top
+  | Uninterp _ -> Val.of_itv Itv.top
 
 and eval_uop : vuop -> Val.t -> Val.t 
 = fun uop v -> Val.of_itv Itv.top
@@ -30,7 +31,7 @@ and eval_bop : vbop -> Val.t -> Val.t -> Val.t
     | VDiv -> Val.of_itv (Itv.divide i1 i2)
     | VMod -> Val.of_itv (Itv.modulo i1 i2)
     | VPower -> Val.of_itv (Itv.power i1 i2)
-    | VShiftL | VShiftR | VBXor | VBAnd | VBOr -> Val.of_itv Itv.top
+    | VShiftL | VShiftR | VBXor | VBAnd | VBOr | VBVConcat -> Val.of_itv Itv.top
 
 let rec eval_vf : vformula -> Mem.t -> Mem.t
 = fun vf mem ->
@@ -77,7 +78,6 @@ and neg_of : vformula -> vformula
      | VGt -> VBinRel (VGeq,e2,e1)
      | VEq -> VOr (VBinRel (VGt,e1,e2), VBinRel (VGt,e2,e1)))
   | Imply (f1,f2) -> VAnd (f1, VNot f2)
-  | SigmaEqual _ -> raise (Failure "neg_of : itvSem2.ml")
-  | NoOverFlow _ -> raise (Failure "neg_of : itvSem2.ml")
-  | ForAll _ -> raise (Failure "neg_of : itvSem2.ml")
+  | SigmaEqual _ | NoOverFlow _ -> raise (Failure "neg_of : itvSem2.ml")
+  | ForAll _ -> raise (Failure "neg_of : itvSem2.ml") (* this constructor is only used for exploit generation *)
   | Label (l,f) -> neg_of f

@@ -104,3 +104,24 @@ let remove_some : 'a option -> 'a
 let triple_fst (a,b,c) = a
 let triple_snd (a,b,c) = b
 let triple_third (a,b,c) = c
+
+let zfill num str =
+  if num > BatString.length str then BatString.repeat "0" (num - BatString.length str) ^ str
+  else str
+
+let replace_str : string -> string -> string -> string
+= fun str sub rep ->
+  let (b,res) = BatString.replace str sub rep in
+  let _ = assert (b) in
+  res
+
+exception NotImplemented
+
+let rec compare_lst cmp lst1 lst2 =
+  match lst1, lst2 with
+  | [], [] -> 0
+  | [], h::t -> -1
+  | h::t, [] -> 1
+  | h1::t1, h2::t2 ->
+    if cmp h1 h2 = 0 then compare_lst cmp t1 t2
+    else cmp h1 h2

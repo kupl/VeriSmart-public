@@ -3,23 +3,13 @@ open Options
 
 module Node = struct
   type t = ENTRY | EXIT | Node of int
+
   let equal n1 n2 =
     match n1, n2 with
     | ENTRY, ENTRY -> true
     | EXIT, EXIT -> true
     | Node i1, Node i2 -> i1 = i2
     | _, _ -> false
-
-  let less n1 n2 =
-    match n1, n2 with
-    | ENTRY, ENTRY -> n1
-    | ENTRY, EXIT -> n1
-    | EXIT, ENTRY -> n2
-    | Node i1, Node i2 -> 
-      if i1 <= i2 then n1 else n2
-    | Node _, ENTRY -> n2
-    | ENTRY, Node _ -> n1
-    | _, _ -> EXIT
 
   let hash = Hashtbl.hash
 
@@ -43,7 +33,6 @@ end
 type node = Node.t
 
 module G = Graph.Persistent.Digraph.Concrete (Node)
-module Scc = Graph.Components.Make(G)
 
 let trans_node = Node.Node 0
 
@@ -75,11 +64,15 @@ and visibility = Public | Internal | External | Private
 
 and var = id * typ
 
+and vultyp = string
+
 and stmt =
   | Assign of lv * exp * loc
   | Decl of lv
   | Seq of stmt * stmt
-  | Call of lv option * exp * exp list * loc * int (* int for call-site id *) 
+  | Call of lv option * exp * exp list *
+            exp option * exp option * (* ether, gas *)
+            loc * int (* loc, call-site (AST id) *)
   | Skip
   | If of exp * stmt * stmt
   | While of exp * stmt
@@ -88,8 +81,9 @@ and stmt =
   | Return of exp option * loc
   | Throw
   | Assume of exp * loc
-  | Assert of exp * loc (* used to check safety conditions *)
-  | Assembly of (id * int) list * loc 
+  | Assert of exp * vultyp * loc (* used to check safety conditions *)
+  | Assembly of (id * int) list * loc
+  | PlaceHolder (* _ *)
 
 and exp =
   | Int of BatBig_int.t
@@ -104,7 +98,9 @@ and exp =
   (* exists only in the interim process *)
   | IncTemp of exp * bool * loc (* true if prefix, false if postfix *)
   | DecTemp of exp * bool * loc
-  | CallTemp of exp * exp list * einfo
+  | CallTemp of exp * exp list *
+                exp option * exp option * (* ether, gas *)
+                einfo
   | CondTemp of exp * exp * exp * typ * loc
   | AssignTemp of lv * exp * loc
 
@@ -139,7 +135,8 @@ and vinfo = {
   vvis : visibility;
   vid : int;
   refid : int; (* referenced declartion. valid only for non-function variables *)
-  storage : string; 
+  vscope : int; (* belonging contract numid (global) or func numid (local) *)
+  storage : string;
   flag : bool; (* true if the information is propagated *)
   org : string (* original name (source code) before renamed or replaced *)
 }
@@ -150,13 +147,20 @@ and einfo = {
   eid : int
 }
 
+and mod_call = id * exp list * loc
+
 and finfo = {
   is_constructor : bool;
   is_payable : bool;
+  is_modifier : bool;
+  mod_list : mod_call list;
+  mod_list2 : mod_call list; (* constructor modifier invocations *)
+  ret_param_loc : int; (* location where ret params are delclared *)
   fvis : visibility;
   fid : int;
-  scope : int; (* belonging contract numid *)
-  scope_s : id; (* belonging contract name *)
+  scope : int;      (* belonging contract numid *)
+  scope_s : id;     (* belonging contract name *)
+  org_scope_s : id; (* original contract name in which functions are initially defined *)
   cfg : cfg
 }
 
@@ -181,7 +185,7 @@ and typ =
   | Mapping2 of typ * typ
   | Array of typ * int option (* type, (size)? *)
   | Contract of id
-  | Struct of id
+  | Struct of id list
   | Enum of id
   | TupleType of typ list
   | Void (* dummy type *)
@@ -195,6 +199,15 @@ and elem_typ =
   | Bytes of int (* fixed-size byte arrays *)
   | DBytes (* dynamically-sized byte arrays *) 
   (* | Fixed | UFixed *)
+
+let dummy_vinfo =
+  {vloc = -1; is_gvar = false; vtype = Void; vvis = Private; vid = -1; refid = -1; vscope = 1; storage = ""; flag = false; org = ""}
+let dummy_vinfo_with_typ typ =
+  {vloc = -1; is_gvar = false; vtype = typ; vvis = Private; vid = -1; refid = -1; vscope = -1; storage = ""; flag = false; org = ""}
+let dummy_vinfo_with_typ_org typ org =
+  {vloc = -1; is_gvar = false; vtype = typ; vvis = Private; vid = -1; refid = -1; vscope = -1; storage = ""; flag = false; org = org}
+let dummy_vinfo_typ_org_loc typ org loc =
+  {vloc = loc; is_gvar = false; vtype = typ; vvis = Private; vid = -1; refid = -1; vscope = -1; storage = ""; flag = false; org = org}
 
 let empty_cfg = {
   graph         = G.empty;
@@ -212,7 +225,7 @@ let find_stmt : node -> cfg -> stmt
 = fun n g -> 
   try if n = Node.ENTRY || n = Node.EXIT then Skip
       else BatMap.find n g.stmt_map
-  with _ -> failwith ("No stmt found in the given node " ^ Node.to_string n)
+  with Not_found -> failwith ("No stmt found in the given node " ^ Node.to_string n)
 
 let nodes_of : cfg -> node list
 = fun g -> G.fold_vertex (fun x acc -> x::acc) g.graph []
@@ -254,6 +267,11 @@ let get_all_structs : pgm -> structure list
 let get_cnames : pgm -> id list
 = fun pgm -> List.map get_cname pgm
 
+let get_gvars_c : contract -> var list
+= fun c ->
+  let decls = get_decls c in
+  List.map (fun (x,_,vinfo) -> (x,vinfo.vtype)) decls
+
 let get_gvars : pgm -> var list
 = fun p ->
   let main = get_main_contract p in
@@ -273,6 +291,9 @@ let get_numid : contract -> int
 
 let get_fname : func -> id (* detach this function *)
 = fun (fname,_,_,_,_) -> fname
+
+let is_payable : func -> bool
+= fun (_,_,_,_,finfo) -> finfo.is_payable
 
 let get_funcs : contract -> func list
 = fun (_,_,_,_,funcs,_) -> funcs
@@ -302,13 +323,16 @@ let update_funcs : func list -> contract -> contract
 = fun funcs (cid,decls,structs,enums,_,cinfo) -> (cid,decls,structs,enums,funcs,cinfo)
 
 let get_inherit_order : contract -> int list
-= fun (_,_,_,_,_,cinfo) -> cinfo.inherit_order
+= fun (_,_,_,_,_,cinfo) -> cinfo.inherit_order (* self => most derived (parent) *)
 
 let is_library : contract -> bool
 = fun c -> BatString.equal (get_cinfo c).ckind "library"
 
 let get_finfo : func -> finfo
 = fun (_,_,_,_,finfo) -> finfo
+
+let get_mod_calls : func -> mod_call list
+= fun (_,_,_,_,finfo) -> finfo.mod_list
 
 let get_vis : func -> visibility 
 = fun f -> (get_finfo f).fvis
@@ -343,11 +367,17 @@ let update_finfo : finfo -> func -> func
 let is_constructor : func -> bool
 = fun f -> (get_finfo f).is_constructor
 
+let is_modifier : func -> bool
+= fun f -> (get_finfo f).is_modifier
+
 let get_body : func -> stmt
 = fun (_,_,_,stmt,_) -> stmt
 
 let update_body : stmt -> func -> func
-= fun stmt' (id,params,rets,stmt,finfo) -> (id, params, rets, stmt', finfo) 
+= fun stmt' (id,params,rets,_,finfo) -> (id, params, rets, stmt', finfo)
+
+let update_fname : id -> func -> func
+= fun id' (_,params,rets,stmt,finfo) -> (id', params, rets, stmt, finfo)
 
 let modify_contract : contract -> pgm -> pgm
 = fun c p ->
@@ -396,7 +426,7 @@ let is_exception_node : node -> cfg -> bool
 = fun n g ->
   match find_stmt n g with
   | Throw -> true
-  | Call (lvop, Lv (Var ("revert",_)), args, _, _) -> true
+  | Call (lvop, Lv (Var ("revert",_)),args,_,_,_,_) -> true
   | _ -> false
 
 let is_entry : node -> bool
@@ -549,8 +579,14 @@ let is_tuple : typ -> bool
   | TupleType _ -> true
   | _ -> false
 
+let is_void : typ -> bool
+= fun t ->
+  match t with
+  | Void -> true
+  | _ -> false
+
 let domain_typ : typ -> typ
-= fun typ -> 
+= fun typ ->
   match typ with
   | Array _ -> EType (UInt 256) 
   | Mapping (et,_) -> EType et
@@ -565,14 +601,14 @@ let range_typ : typ -> typ
   | Array (t,_) -> t
   | Mapping (_,t) -> t
   | Mapping2 (_,t) -> t
-  | EType DBytes -> EType (Bytes 1) 
+  | EType DBytes -> EType (Bytes 1)
   | _ -> failwith "range_typ"
 
-let unroll_tuple : typ -> typ list
+let tuple_elem_typs : typ -> typ list
 = fun t ->
   match t with
   | TupleType lst -> lst
-  | _ -> failwith "unroll_tuple"
+  | _ -> failwith "tuple_elem_typs"
 
 let get_bytes_size : typ -> int
 = fun t ->
@@ -589,7 +625,7 @@ let exp_to_lv : exp -> lv
 let get_name_userdef : typ -> id
 = fun t ->
   match t with
-  | Struct s -> s
+  | Struct lst -> string_of_list ~first:"" ~last:"" ~sep:"." Vocab.id lst
   | Enum s -> s
   | Contract s -> s
   | _ -> raise (Failure "get_name_userdef")
@@ -659,12 +695,6 @@ let rec bit_signed_of_int : BatBig_int.t -> int -> int
   if big_ge n (big_neg (big_pow 2 (bit-1))) && big_lt n (big_pow 2 (bit-1)) then bit (* meaning EType (SInt bit) *)
   else bit_signed_of_int n (bit+8)
 
-let dummy_vinfo = {vloc = -1; is_gvar = false; vtype = Void; vvis = Private; vid = -1; refid = -1; storage = ""; flag = false; org = ""} 
-let dummy_vinfo_with_typ typ =
-  {vloc = -1; is_gvar = false; vtype = typ; vvis = Private; vid = -1; refid = -1; storage = ""; flag = false; org = ""} 
-let dummy_vinfo_with_typ_org typ org =
-  {vloc = -1; is_gvar = false; vtype = typ; vvis = Private; vid = -1; refid = -1; storage = ""; flag = false; org = org}
-
 let is_supported_mapping : typ -> bool
 = fun typ ->
   match typ with
@@ -676,37 +706,6 @@ let is_supported_mapping : typ -> bool
   | Mapping (Address, Mapping (Address, EType (UInt _))) -> true
   | Mapping _ -> false
   | _ -> assert false
-
-let get_init_stmt : lv -> int -> stmt
-= fun lv loc ->
-  match get_type_lv lv with
-  | EType Address -> Assign (lv, Int BatBig_int.zero, loc)
-  | EType Bool -> Assign (lv, False, loc)
-  | EType String -> Assign (lv, Str "", loc)
-  | EType (UInt _) -> Assign (lv, Int BatBig_int.zero, loc)
-  | EType (SInt _) -> Assign (lv, Int BatBig_int.zero, loc)
-  | EType (Bytes _) -> Assign (lv, Int BatBig_int.zero, loc)
-  | EType DBytes -> Skip
-  | Array _ -> Call (None, Lv (Var ("array_decl", dummy_vinfo)), [Lv lv], loc, -1)
-
-  | Mapping (Address, EType Address)
-  | Mapping (Address, EType (UInt _))
-  | Mapping (Address, EType Bool)
-  | Mapping (UInt _, EType Address)
-  | Mapping (UInt _, EType (UInt _)) -> Call (None, Lv (Var ("mapping_init", dummy_vinfo)), [Lv lv], loc, -1)
-
-  | Mapping (Address, Mapping (Address, EType (UInt _))) -> Call (None, Lv (Var ("mapping_init2", dummy_vinfo)), [Lv lv], loc, -1)
-  | Contract id -> Assign (lv, Cast (Contract id, Int BatBig_int.zero), loc)
-  | Mapping2 _ -> failwith "get_init_stmt - an expression of void type should not exist."
-  | Void -> failwith "get_init_stmt - an expression of void type should not exist."
-  | _ -> Call (None, Lv (Var ("dummy_init", dummy_vinfo)), [Lv lv], loc, -1)
-
-let gvar_init = Call (None, Lv (Var ("GVar_Init", dummy_vinfo)), [], -1, -1)
-
-let is_gvar_init stmt =
-  match stmt with
-  | Call (None, Lv (Var ("GVar_Init",_)), [], -1, -1) -> true
-  | _ -> false
 
 let is_skip stmt =
   match stmt with
@@ -769,8 +768,11 @@ let rec to_string_exp ?(report=false) exp =
   | DecTemp (e,prefix,_) -> if prefix then "--" ^ to_string_exp e else to_string_exp e ^ "--" 
   | CondTemp (e1,e2,e3,_,_) -> "(" ^ to_string_exp e1 ^ " ? " ^ to_string_exp e2 ^ " : " ^ to_string_exp e3 ^ ")"
   | AssignTemp (lv,e,_) -> "(" ^ to_string_lv lv ^ " = " ^ to_string_exp e ^ ")"
-  | CallTemp (e,params,_) ->
-    to_string_exp e ^ string_of_list ~first:"(" ~last:")" ~sep:", " to_string_exp params 
+  | CallTemp (e,args,ethop,gasop,_) ->
+    to_string_exp ~report e ^
+    (match ethop with None -> "" | Some e -> ".value(" ^ to_string_exp ~report e ^ ")") ^
+    (match gasop with None -> "" | Some e -> ".gas(" ^ to_string_exp ~report e ^ ")") ^
+    string_of_list ~first:"(" ~last:")" ~sep:", " (to_string_exp ~report) args
 
 and to_string_exp_opt exp =
   match exp with
@@ -819,10 +821,12 @@ and to_string_typ typ =
   | Array (typ,None) -> to_string_typ typ ^ "[]"
   | Array (typ,Some n) -> to_string_typ typ ^ "[" ^ string_of_int n ^ "]"
   | Void -> "void"
-  (* | UserDef s -> "UserDefinedType" ^ "-" ^ s *)
-  | Contract id -> "Contract:" ^ id
-  | Struct id -> "Struct:" ^ id
-  | Enum id -> "Enum:" ^ id
+
+    (* add 'contract ' or 'struct ' for compatibility with Translator.trans_str_to_typeName *)
+  | Contract id -> "contract " ^ id
+  | Struct lst -> "struct " ^ string_of_list ~first:"" ~last:"" ~sep:"." Vocab.id lst
+
+  | Enum id -> id
   | TupleType typs -> "Tuple" ^ string_of_list ~first:"(" ~last:")" ~sep:", " to_string_typ typs
 
 and to_string_etyp elem_typ =
@@ -831,7 +835,7 @@ and to_string_etyp elem_typ =
   | Bool -> "bool"
   | String -> "string"
   | UInt n -> "uint" ^ string_of_int n
-  | SInt n -> "sint" ^ string_of_int n
+  | SInt n -> "int" ^ string_of_int n
   | Bytes n -> "bytes" ^ string_of_int n
   | DBytes -> "dbytes" (* dynamically-sized byte array *)
   (* | Fixed -> "fixed"
@@ -840,17 +844,24 @@ and to_string_etyp elem_typ =
 let rec to_string_stmt ?(report=false) stmt =
   match stmt with
   | Assign (lv,e,_) -> to_string_lv ~report lv ^ " = " ^ to_string_exp ~report e ^ ";"
-  | Decl (Var (id,vinfo)) -> to_string_typ vinfo.vtype ^ " " ^ id ^ ";"
-  | Decl _ -> raise (Failure "invalid declaration")
-  | Seq (s1,s2) -> to_string_stmt ~report s1 ^ "" ^ "\n" ^ "    " ^ to_string_stmt ~report s2 
-  | Call (None, e, exps, _, _) ->
-    to_string_exp ~report e ^ string_of_list ~first:"(" ~last:")" ~sep:", " (to_string_exp ~report) exps ^ ";"
-  | Call (Some lv, e, exps, _, _) ->
+  | Decl lv -> to_string_typ (get_type_lv lv) ^ " " ^ to_string_lv lv ^ ";"
+  | Seq (s1,s2) -> to_string_stmt ~report s1 ^ "" ^ "\n" ^ "    " ^ to_string_stmt ~report s2
+  | Call (None, e, exps, ethop, gasop, _, _) ->
+    to_string_exp ~report e ^
+    (match ethop with None -> "" | Some e -> ".value(" ^ to_string_exp ~report e ^ ")") ^
+    (match gasop with None -> "" | Some e -> ".gas(" ^ to_string_exp ~report e ^ ")") ^
+    string_of_list ~first:"(" ~last:")" ~sep:", " (to_string_exp ~report) exps ^ ";"
+
+  | Call (Some lv, e, exps, ethop, gasop, _, _) ->
+    (* NOTE: refer to 'replace_tmpexp_e' in preprocess.ml *)
     if report && BatString.starts_with (to_string_lv lv) "Tmp" then
       to_string_lv ~report lv
-    else 
-      to_string_lv ~report lv ^ " = " ^ to_string_exp ~report e ^ 
+    else
+      to_string_lv ~report lv ^ " = " ^ to_string_exp ~report e ^
+      (match ethop with None -> "" | Some e -> ".value(" ^ to_string_exp ~report e ^ ")") ^
+      (match gasop with None -> "" | Some e -> ".gas(" ^ to_string_exp ~report e ^ ")") ^
       string_of_list ~first:"(" ~last:")" ~sep:", " (to_string_exp ~report) exps ^ ";"
+
   | Skip -> "skip;"
   | If (e,s1,s2) ->
     "if" ^ "(" ^ to_string_exp ~report e ^ ")" ^ "{" ^ to_string_stmt ~report s1 ^ "}" ^ " " ^
@@ -862,17 +873,25 @@ let rec to_string_stmt ?(report=false) stmt =
   | Return (Some e,_) -> "return " ^ to_string_exp ~report e ^ ";"
   | Throw -> "throw;"
   | Assume (e,_) -> "assume" ^ "(" ^ to_string_exp ~report e ^ ")" ^ ";"
-  | Assert (e,_) -> "assert" ^ "(" ^ to_string_exp ~report e ^ ")" ^ ";"
+  | Assert (e,_,_) -> "assert" ^ "(" ^ to_string_exp ~report e ^ ")" ^ ";"
   | Assembly (lst,_) ->
     "assembly" ^ string_of_list ~first:"{" ~last:"}" ~sep:", " (fst|>id) lst ^ ";"
+  | PlaceHolder -> "_;"
 
 let rec to_string_func (id,params,ret_params,stmt,finfo) =
-  "function" ^ " " ^ id ^ " " ^ (string_of_list ~first:"(" ~last:")" ~sep:", " to_string_param params) ^
-  " " ^ "returns" ^ " " ^ (string_of_list ~first:"(" ~last:")" ~sep:", " to_string_param ret_params) ^
+  "function" ^ " " ^ id ^ " " ^ to_string_params params ^
+  (if List.length finfo.mod_list2 > 0 then " " ^ to_string_mods finfo.mod_list2 else "") ^
+  (if List.length finfo.mod_list > 0 then " " ^ to_string_mods finfo.mod_list else "") ^
+  " " ^ "returns" ^ " " ^ to_string_params ret_params ^
   " " ^ to_string_vis finfo.fvis ^ " " ^ "{" ^ "\n" ^
   "    " ^ to_string_stmt stmt ^ "\n" ^ "  " ^ "}" ^ "\n"
  
 and to_string_param (id,vinfo) = to_string_typ vinfo.vtype ^ " " ^ id
+and to_string_params params = string_of_list ~first:"(" ~last:")" ~sep:", " to_string_param params
+
+and to_string_exps exps = string_of_list ~first:"(" ~last:")" ~sep:", " to_string_exp exps
+and to_string_mod (id,exps,loc) = if List.length exps = 0 then id else id ^ to_string_exps exps
+and to_string_mods mods = string_of_list ~first:"" ~last:"" ~sep:" " to_string_mod mods
 
 and to_string_vis vis =
  match vis with
@@ -913,9 +932,7 @@ let to_string_fsig (fname,typs) =
   fname ^ ", " ^ (string_of_list ~first:"{" ~last:"}" ~sep:", " to_string_typ typs)
 
 let to_string_fkey (cname,fname,typs) =
-  "\"" ^
-  "(" ^ cname ^ ", " ^ fname ^ ", " ^ (string_of_list ~first:"[" ~last:"]" ~sep:", " to_string_typ typs) ^ ")" ^
-  "\""
+  "(" ^ cname ^ ", " ^ fname ^ ", " ^ (string_of_list ~first:"[" ~last:"]" ~sep:", " to_string_typ typs) ^ ")"
 
 let to_string_cfg ?(name="G") : cfg -> string
 = fun cfg ->
@@ -1001,14 +1018,14 @@ let rec replace_exp : exp -> exp -> exp -> exp
   | Int _ | Real _ | Str _ -> exp
   | Lv lv when exp = target -> replacement
   | Lv lv -> exp
-  | Cast (typ,e) -> Cast (typ, replace_exp e target replacement) 
+  | Cast (typ,e) -> Cast (typ, replace_exp e target replacement)
   | BinOp (bop,e1,e2,einfo) -> BinOp (bop, replace_exp e1 target replacement, replace_exp e2 target replacement, einfo)
-  | UnOp (uop,e,typ) -> UnOp (uop, replace_exp e target replacement, typ) 
+  | UnOp (uop,e,typ) -> UnOp (uop, replace_exp e target replacement, typ)
   | True | False -> exp
-  | ETypeName _ -> exp 
-  | AssignTemp _ 
+  | ETypeName _ -> exp
+  | AssignTemp _
   | CondTemp _
-  | IncTemp _ 
+  | IncTemp _
   | DecTemp _
   | CallTemp _ -> raise (Failure "replace_exp")
 
@@ -1042,8 +1059,8 @@ let args_to_exp : exp list -> exp
 let is_static_call : id list -> stmt -> bool
 = fun cnames stmt ->
   match stmt with
-  | Call (_,Lv (Var (f,_)),_,_,_) -> true
-  | Call (_,Lv (MemberAccess (Lv (Var (x,_)),_,_,_)),_,_,_) when List.mem x cnames -> true
+  | Call (_,Lv (Var (f,_)),_,_,_,_,_) -> true
+  | Call (_,Lv (MemberAccess (Lv (Var (x,_)),_,_,_)),_,_,_,_,_) when List.mem x cnames -> true
   | Call _ -> false
   | _ -> failwith "is_static_call"
 
@@ -1066,8 +1083,9 @@ let is_balance_keyword lv =
     -> true
   | _ -> false
 
-let init_funcs = ["array_init"; "array_decl"; "dbytes_init"; "string_init"; "contract_init"; "struct_init"; "struct_init2"; "mapping_init"; "mapping_init2"; "dummy_init"]
+let init_funcs = ["array_init"; "dbytes_init"; "string_init"; "contract_init"; "struct_init"; "struct_init2"]
 
+(* suicide is disallowed since solc 0.5.0 *)
 let built_in_funcs =
   ["abi.encode"; "abi.decode"; "abi.encodePacked"; "abi.encodeWithSignature"; "abi.encodeWithSelector";
    "revert"; "keccak256"; "sha3"; "sha256"; "ripemd160"; "delete"; 
@@ -1161,6 +1179,7 @@ let preceding_typ : typ -> typ -> typ
     | EType Address, Contract s -> t1
     | Contract s, EType Address -> t2
     | EType Bytes _, ConstInt -> t1
+    | ConstInt, EType Bytes _ -> t2
     | Array (t1,None), Array (t2, Some n) when t1=t2 -> Array (t1,None)
     | Contract id1, Contract id2 -> t2
     | ConstString, EType Bytes _ -> t2
@@ -1217,17 +1236,26 @@ let mk_finfo : contract -> finfo
 = fun c ->
   {is_constructor = false;
    is_payable = false;
+   is_modifier = false;
+   mod_list = [];
+   mod_list2 = []; (* modifier by inheritance *)
+   ret_param_loc = (-1);
    fvis = Public;
    fid = (-1);
    scope = (get_cinfo c).numid;
    scope_s = get_cname c;
+   org_scope_s = get_cname c;
    cfg = empty_cfg}
 
-let mk_access : exp -> exp -> exp
+let mk_index_access : exp -> exp -> exp
 = fun e1 e2 ->
   let _ = assert (is_usual_mapping (get_type_exp e1) || is_usual_allowance (get_type_exp e1)) in
   let _ = assert (is_address (get_type_exp e2)) in
   Lv (IndexAccess (e1, Some e2, range_typ (get_type_exp e1)))
+
+let mk_member_access : exp -> var -> exp
+= fun e (x,t) ->
+  Lv (MemberAccess (e, x, dummy_vinfo_with_typ t, t))
 
 let mk_eq : exp -> exp -> exp
 = fun e1 e2 -> BinOp (Eq, e1, e2, mk_einfo (EType Bool))
@@ -1237,6 +1265,9 @@ let mk_neq : exp -> exp -> exp
 
 let mk_ge : exp -> exp -> exp
 = fun e1 e2 -> BinOp (GEq, e1, e2, mk_einfo (EType Bool))
+
+let mk_gt : exp -> exp -> exp
+= fun e1 e2 -> BinOp (Gt, e1, e2, mk_einfo (EType Bool))
 
 let mk_and : exp -> exp -> exp
 = fun e1 e2 ->
@@ -1250,5 +1281,101 @@ let mk_or : exp -> exp -> exp
   let _ = assert (is_bool (get_type_exp e2)) in
   BinOp (LOr, e1, e2, mk_einfo (EType Bool))
 
-let mk_plus : exp -> exp -> exp
+let mk_add : exp -> exp -> exp
 = fun e1 e2 -> BinOp (Add, e1, e2, mk_einfo (common_typ e1 e2))
+
+let mk_sub : exp -> exp -> exp
+= fun e1 e2 -> BinOp (Sub, e1, e2, mk_einfo (common_typ e1 e2))
+
+let mk_mul : exp -> exp -> exp
+= fun e1 e2 -> BinOp (Mul, e1, e2, mk_einfo (common_typ e1 e2))
+
+let mk_div : exp -> exp -> exp
+= fun e1 e2 -> BinOp (Div, e1, e2, mk_einfo (common_typ e1 e2))
+
+(* rename local variables  with given labels *)
+let rec rename_lv : string -> var list -> lv -> lv
+= fun lab gvars lv ->
+  match lv with
+  | Var (x,xinfo) ->
+    if List.mem (x,xinfo.vtype) gvars then lv
+    else Var (x ^ lab, xinfo)
+  | MemberAccess (e,x,xinfo,typ) when is_enum typ -> lv
+  | MemberAccess (e,x,xinfo,typ) -> MemberAccess (rename_e lab gvars e, x, xinfo, typ)
+  | IndexAccess (e,None,_) -> failwith "rename_lv"
+  | IndexAccess (e1,Some e2,typ) -> IndexAccess (rename_e lab gvars e1, Some (rename_e lab gvars e2), typ)
+  | Tuple (eoplst,typ) ->
+    let eoplst' =
+      List.map (fun eop ->
+        match eop with
+        | None -> None
+        | Some e -> Some (rename_e lab gvars e)
+      ) eoplst
+    in
+    Tuple (eoplst',typ)
+
+and rename_e : string -> var list -> exp -> exp
+= fun lab gvars exp ->
+  match exp with
+  | Int _ | Real _ | Str _ -> exp
+  | Lv lv ->
+    if List.mem (to_string_lv lv) keyword_vars || to_string_lv lv = "abi" then exp
+    else Lv (rename_lv lab gvars lv)
+  | Cast (typ,e) -> Cast (typ, rename_e lab gvars e)
+  | BinOp (bop,e1,e2,einfo) ->
+    BinOp (bop, rename_e lab gvars e1, rename_e lab gvars e2, einfo)
+  | UnOp (uop,e,typ) -> UnOp (uop, rename_e lab gvars e, typ)
+  | True | False -> exp
+  | ETypeName _ -> exp
+  | IncTemp _ | DecTemp _ | CallTemp _
+  | CondTemp _ | AssignTemp _ -> failwith "rename_e"
+
+let rec rename_stmt : string -> var list -> id list -> stmt -> stmt
+= fun lab gvars cnames stmt ->
+  match stmt with
+  | Assign (lv,e,loc) ->  Assign (rename_lv lab gvars lv, rename_e lab gvars e, loc)
+  | Decl lv -> Decl (rename_lv lab gvars lv)
+  | Call (lvop,e,args,ethop,gasop,loc,site) ->
+    let lvop' = match lvop with None -> lvop | Some lv -> Some (rename_lv lab gvars lv) in
+    let e' =
+      match e with (* rename only for contract object cases *)
+      | Lv (MemberAccess (Lv (Var (x,xinfo)) as obj, fname, fname_info, typ)) ->
+        if List.mem x cnames || x = "super" then e (* static call *)
+        else Lv (MemberAccess (rename_e lab gvars obj, fname, fname_info, typ))
+      | _ -> e (* built-in functions, static call without prefixes *)
+    in
+    let args' =
+      if to_string_exp e = "struct_init" || to_string_exp e = "contract_init" then
+        (* the first arg is struct/contract name; see preprocess.ml *)
+        (List.hd args)::(List.map (rename_e lab gvars) (List.tl args))
+      else List.map (rename_e lab gvars) args
+    in
+    let ethop' = match ethop with None -> ethop | Some e -> Some (rename_e lab gvars e) in
+    let gasop' = match gasop with None -> gasop | Some e -> Some (rename_e lab gvars e) in
+    Call (lvop',e',args',ethop',gasop',loc,site)
+  | Skip -> stmt
+  | Return (None,_) -> stmt
+  | Return (Some e,loc) -> Return (Some (rename_e lab gvars e), loc)
+  | Throw -> stmt
+  | Assume (e,loc) -> Assume (rename_e lab gvars e, loc)
+  | Assert (e,vtyp,loc) -> Assert (rename_e lab gvars e, vtyp, loc)
+  | Assembly (lst,loc) ->
+    let gnames = List.map fst gvars in
+    let lst' =
+      List.map (fun (x,refid) ->
+        if List.mem x gnames then (x,refid)
+        else (x ^ lab, refid)
+      ) lst
+    in
+    Assembly (lst',loc)
+  | If (e,s1,s2) -> If (rename_e lab gvars e, rename_stmt lab gvars cnames s1, rename_stmt lab gvars cnames s2)
+  | Seq (s1,s2) -> Seq (rename_stmt lab gvars cnames s1, rename_stmt lab gvars cnames s2)
+  | While (e,s) -> While (rename_e lab gvars e, rename_stmt lab gvars cnames s)
+  | Break | Continue | PlaceHolder -> stmt
+
+
+let no_eth_gas_modifiers stmt =
+  match stmt with
+  | Call (_,_,_,None,None,_,_) -> true
+  | Call _ -> false
+  | _ -> failwith "no_eth_gas_modifiers"

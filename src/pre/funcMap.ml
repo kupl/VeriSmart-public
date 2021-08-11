@@ -7,6 +7,7 @@ let rec is_implicitly_convertible : typ -> typ -> bool
   else
     (match my_typ, comp_typ with
      | ConstInt, EType (UInt n) -> true
+     | ConstInt, Struct _ -> false
      | EType (UInt n1), EType (UInt n2) -> n1<=n2 
      | ConstInt, EType (SInt n) -> true
      | EType (SInt n1), EType (SInt n2) -> n1<=n2
@@ -15,10 +16,9 @@ let rec is_implicitly_convertible : typ -> typ -> bool
      | ConstInt, EType String -> false
      | ConstInt, Array _ -> false
      | Contract _, EType Address ->
-       (* true for 0.4x, false for 0.5x *)
+       (* true for 0.4x, false for later versions *)
        if BatString.starts_with !Options.solc_ver "0.4" then true
-       else if BatString.starts_with !Options.solc_ver "0.5" then false
-       else failwith "is_implicitly_convertible"
+       else false
      | Contract _, EType (Bytes _) -> false
      | Contract _, EType DBytes -> false
      | ConstString, EType (Bytes _) -> true
@@ -28,6 +28,7 @@ let rec is_implicitly_convertible : typ -> typ -> bool
      | ConstString, Array (EType DBytes, _) -> false
      | ConstString, EType (UInt _) -> false
      | ConstString, Contract _ -> false
+     | ConstString, EType Address -> false
      | EType String, EType DBytes -> false
      | EType String, EType (Bytes _) -> false
      | EType String, Struct _ -> false
@@ -56,7 +57,9 @@ let rec is_implicitly_convertible : typ -> typ -> bool
      | Array (t1, Some n1), Array (t2, Some n2) when n1=n2 -> is_implicitly_convertible t1 t2
      | Array (t1, None), Array (t2, None) -> is_implicitly_convertible t1 t2
      | Array _, Array _ -> false
-     | Struct id1, Struct id2 -> BatString.equal id1 id2
+     | Struct lst1, Struct lst2 ->
+       if not (List.length lst1 = List.length lst2) then false
+       else List.for_all2 (fun i1 i2 -> i1=i2) lst1 lst2
      | Contract _, EType (UInt _) -> false 
      | EType (Bytes _), Struct _ -> false
      | Struct _, EType (UInt _) -> false
@@ -92,6 +95,7 @@ let rec is_implicitly_convertible : typ -> typ -> bool
      | Struct _, EType (Bytes _) -> false
      | EType DBytes, Enum _ -> false
      | Struct _, Array _ -> false
+     | EType (SInt _), Struct _ -> false
      | _ -> failwith ("is_implicitly_convertible : " ^ to_string_typ my_typ ^ " vs. " ^ to_string_typ comp_typ))
 
 exception FunctionNotFound of string * string

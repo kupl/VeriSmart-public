@@ -23,66 +23,6 @@ let rec norm_vf : vformula -> vformula
     when equal_ve x1 x2 && equal_ve y1 y2 -> VBinRel (VGt,x1,y1)
   | VAnd (VBinRel (VGeq,x1,y1), VBinRel (VGeq,y2,x2))
     when equal_ve x1 x2 && equal_ve y1 y2 -> VBinRel (VEq,x1,y1)
-    (* a = v1 
-     * b = v2
-     * -
-     * c = a + b
-     * c >= a
-     * -
-     * ret = c
-     * tmp = ret
-     * balance = write (balance', e1, e2, tmp)
-     * *)
-  | VAnd (VAnd (VAnd (VAnd (VAnd (VAnd (VAnd (VAnd (VAnd (f1,
-                                                          VBinRel (VEq,a1,v1)),
-                                                          VBinRel (VEq,b1,v2)),
-                                                          f4),
-                                                          VBinRel (VEq,c1,VBinOp (VAdd,a2,b2,t))),
-                                                          VBinRel (VGeq,c2,a3)),
-                                                          f7),
-                                                          VBinRel (VEq,ret1,c3)),
-                                                          VBinRel (VEq,tmp1,ret2)),
-                                                          VBinRel (VEq,balance,Write (e1,e2,tmp2)))
-    when equal_ve a1 a2 && equal_ve a2 a3 &&
-         equal_ve b1 b2 &&
-         equal_ve c1 c2 && equal_ve c2 c3 &&
-         equal_ve ret1 ret2 &&
-         equal_ve tmp1 tmp2
-    ->
-    let safe = VBinRel (VGeq,VBinOp (VAdd,v1,v2,t),v1) in
-    let con = VBinRel (VEq,balance,Write (e1,e2,VBinOp (VAdd,v1,v2,t))) in
-    VAnd (VAnd (VAnd (VAnd (f1,f4),f7),safe),con)
-   (* a = v1
-    * b = v2
-    * X
-    * a >= b
-    * ret = a-b
-    * tmp = ret
-    * balance = Write (e1,e2,tmp) *)
-  | VAnd (VAnd (VAnd (VAnd (VAnd (VAnd (VAnd (f1,
-                                              VBinRel (VEq,a1,v1)),
-                                              VBinRel (VEq,b1,v2)),
-                                              f4),
-                                              VBinRel (VGeq,a2,b2)),
-                                              VBinRel (VEq,ret1,VBinOp (VSub,a3,b3,t2))),
-                                              VBinRel (VEq,tmp1,ret2)),
-                                              VBinRel (VEq,balance,Write (e1,e2,tmp2)))
-    when equal_ve a1 a2 && equal_ve a2 a3 &&
-         equal_ve b1 b2 && equal_ve b2 b3 &&
-         equal_ve ret1 ret2 && equal_ve tmp1 tmp2
-    ->
-    VAnd (VAnd (VAnd (f1,f4),VBinRel (VGeq,v1,v2)), VBinRel (VEq,balance,Write (e1,e2,VBinOp (VSub,v1,v2,t2))))
-  | VAnd (VAnd (VAnd (VAnd (VAnd (VAnd (f1,
-                                        VBinRel (VEq,a1,v1)),
-                                        VBinRel (VEq,b1,v2)),
-                                        f3),
-                                        VBinRel (VGeq,a2,b2)),
-                                        VBinRel (VEq,ret1,VBinOp (VSub,a3,b3,t2))),
-                                        VBinRel (VEq,tmp,ret2))
-    when equal_ve a1 a2 && equal_ve a2 a3 &&
-         equal_ve b1 b2 && equal_ve b2 b3 &&
-         equal_ve ret1 ret2
-    -> VAnd (VAnd (VAnd (f1,f3),VBinRel (VGeq,v1,v2)), VBinRel (VEq,tmp,VBinOp (VSub,v1,v2,t2)))
   | VAnd (f1,f2) -> VAnd (norm_vf f1, norm_vf f2)
   | VOr (VTrue,_) -> VTrue
   | VOr (_,VTrue) -> VTrue
@@ -99,35 +39,34 @@ let rec norm_vf : vformula -> vformula
          BatBig_int.equal n4 BatBig_int.one &&
          equal_ve e1 e2 && equal_ve e2 e3 && equal_ve e3 e4 
     -> VTrue
+  | VOr (VBinRel (VEq,e1,VInt n1),
+         VAnd (VNot (VBinRel (VEq,e2,VInt n2)), VBinRel (VEq, VBinOp (VDiv, (VBinOp (VMul,e3,VCast(EType (UInt 256), VInt n3),t)),e4,t'), VCast (EType (UInt 256), VInt n4))))
+    when BatBig_int.equal n1 BatBig_int.zero &&
+         BatBig_int.equal n2 BatBig_int.zero &&
+         BatBig_int.equal n3 BatBig_int.one &&
+         BatBig_int.equal n4 BatBig_int.one &&
+         equal_ve e1 e2 && equal_ve e2 e3 && equal_ve e3 e4
+    -> VTrue
   | VOr (f1,f2) -> VOr (norm_vf f1, norm_vf f2)
   | VBinRel (VEq,e1,e2) when equal_ve e1 e2 -> VTrue
   (* | VBinRel (VEq,VVar (x,xt),VVar (y,yt)) when x > y -> VBinRel (VEq,VVar (y,yt),VVar (x,xt)) *)
   | VBinRel (VEq,VInt n1,VInt n2) -> if BatBig_int.equal n1 n2 then VTrue else VFalse
   | VBinRel (VEq,VInt n,e) -> VBinRel (VEq,e,VInt n)
-  | VBinRel (VEq,VCond VFalse,VCond VTrue) -> VFalse
+  | VBinRel (VEq, VCond (VBinRel (rel,e1,e2)), VCond VTrue) -> VBinRel (rel,e1,e2)
+  | VBinRel (VEq, VCond VTrue, VCond (VBinRel (rel,e1,e2))) -> VBinRel (rel,e1,e2)
+  | VBinRel (VEq, VCond VFalse, VCond VTrue) -> VFalse
   | VBinRel (VEq,VCond VTrue,VCond VFalse) -> VFalse
+  | VBinRel (VGt, VInt n1, VInt n2) -> if BatBig_int.gt_big_int n1 n2 then VTrue else VFalse
   | VBinRel (VGt,e1,e2) when equal_ve e1 e2 -> VFalse
+  | VBinRel (VGeq, VInt n1, VInt n2) -> if BatBig_int.ge_big_int n1 n2 then VTrue else VFalse
   | VBinRel (VGeq,e1,e2) when equal_ve e1 e2 -> VTrue
   | VBinRel (VGeq, VInt n, VVar (x,t)) when is_uintkind t && BatBig_int.sign_big_int n = 0 -> VBinRel (VEq, VVar (x,t), VInt n)
   | VBinRel (VGeq, VVar (x,EType (UInt 8)), VInt n)
     when BatBig_int.sign_big_int (BatBig_int.modulo n (BatBig_int.of_int 256)) = 0 -> VTrue 
   | VBinRel (VGeq, VVar (_,t), VInt n) when is_uintkind t && BatBig_int.sign_big_int n = 0 -> VTrue
   | VBinRel (rel,e1,e2) -> VBinRel (rel, norm_ve e1, norm_ve e2)
-    (* A = B / C /\ C != 0 -> A == 0 \/ (A != 0 /\ (A * C / A) == C)  *)
-    (* e1  e2  e3   e4  n4   e5   n5    e6   n6    e7  e8   e9   e10  *)
-    (* i.e., (B/C) * C is safe. *)
-  | Imply (VAnd (VAnd (_,VBinRel (VEq,e1,VBinOp(VDiv,e2,e3,_))), VNot (VBinRel (VEq,e4,VInt n4))),
-           VOr (VBinRel (VEq,e5,VInt n5),
-                VAnd (VNot (VBinRel (VEq,e6,VInt n6)), VBinRel (VEq, VBinOp (VDiv, (VBinOp (VMul,e7,e8,_)),e9,_),e10))))
-    when BatBig_int.equal n4 BatBig_int.zero &&
-         BatBig_int.equal n5 BatBig_int.zero &&
-         BatBig_int.equal n6 BatBig_int.zero &&
-         equal_ve e1 e5 && equal_ve e5 e6 && equal_ve e6 e7 && equal_ve e7 e9 &&
-         equal_ve e3 e4 && equal_ve e4 e8 && equal_ve e8 e10
-    -> VTrue
   | Imply (f1,f2) -> Imply (norm_vf f1, norm_vf f2)
-  | SigmaEqual _ -> vf
-  | NoOverFlow _ -> vf
+  | SigmaEqual _ | NoOverFlow _ -> vf
   | ForAll (vars,f) -> ForAll (vars, norm_vf f)
   | Label (_,f) -> norm_vf f
 
@@ -135,21 +74,44 @@ and norm_ve : vexp -> vexp
 = fun ve ->
   match ve with
   | VInt _ | VVar _ -> ve
-  | Read (e1,e2,t) -> ve (* optimize if neccesary *) 
-  | Write (e1,e2,e3) -> ve
-  | VBinOp (bop,e1,e2,t) -> VBinOp (bop, norm_ve e1, norm_ve e2,t)
+  | Read (e1,e2,t) -> Read (norm_ve e1, norm_ve e2, t)
+  | Write (e1,e2,e3) -> Write (norm_ve e1, norm_ve e2, norm_ve e3)
+
+  (* constant folding *)
+  | VBinOp (VAdd,VInt n1,VInt n2,ConstInt) -> VInt (BatBig_int.add n1 n2)
+  | VBinOp (VAdd,VInt n1,VInt n2,typ) -> VCast (typ, VInt (BatBig_int.add n1 n2))
+  | VBinOp (VSub,VInt n1,VInt n2,ConstInt) -> VInt (BatBig_int.sub n1 n2)
+  | VBinOp (VSub,VInt n1,VInt n2,typ) -> VCast (typ, VInt (BatBig_int.sub n1 n2))
+  | VBinOp (VMul,VInt n1,VInt n2,ConstInt) -> VInt (BatBig_int.mul n1 n2)
+  | VBinOp (VMul,VInt n1,VInt n2,typ) -> VCast (typ, VInt (BatBig_int.mul n1 n2))
+  | VBinOp (VDiv,VInt n1,VInt n2,ConstInt) -> VInt (BatBig_int.div n1 n2)
+  | VBinOp (VDiv,VInt n1,VInt n2,typ) -> VCast (typ, VInt (BatBig_int.div n1 n2))
+  | VBinOp (VMod,VInt n1,VInt n2,ConstInt) -> VInt (BatBig_int.modulo n1 n2)
+  | VBinOp (VMod,VInt n1,VInt n2,typ) -> VCast (typ, VInt (BatBig_int.modulo n1 n2))
+  | VBinOp (VPower,VInt n1,VInt n2,ConstInt) -> VInt (BatBig_int.pow n1 n2)
+  | VBinOp (VPower,VInt n1,VInt n2,typ) -> VCast (typ, VInt (BatBig_int.pow n1 n2))
+  | VBinOp (VShiftL,VInt n1,VInt n2,ConstInt) -> VInt (BatBig_int.shift_left_big_int n1 (BatBig_int.to_int n2))
+  | VBinOp (VShiftL,VInt n1,VInt n2,typ) -> VCast (typ, VInt (BatBig_int.shift_left_big_int n1 (BatBig_int.to_int n2)))
+  | VBinOp (VShiftR,VInt n1,VInt n2,ConstInt) -> VInt (BatBig_int.shift_right_big_int n1 (BatBig_int.to_int n2))
+  | VBinOp (VShiftR,VInt n1,VInt n2,typ) -> VCast (typ, VInt (BatBig_int.shift_right_big_int n1 (BatBig_int.to_int n2)))
+  | VBinOp (VBXor,VInt n1,VInt n2,ConstInt) -> VInt (BatBig_int.xor_big_int n1 n2)
+  | VBinOp (VBXor,VInt n1,VInt n2,typ) -> VCast (typ, VInt (BatBig_int.xor_big_int n1 n2))
+  | VBinOp (VBAnd,VInt n1,VInt n2,ConstInt) -> VInt (BatBig_int.and_big_int n1 n2)
+  | VBinOp (VBAnd,VInt n1,VInt n2,typ) -> VCast (typ, VInt (BatBig_int.and_big_int n1 n2))
+  | VBinOp (VBOr,VInt n1,VInt n2,ConstInt) -> VInt (BatBig_int.or_big_int n1 n2)
+  | VBinOp (VBOr,VInt n1,VInt n2,typ) -> VCast (typ, VInt (BatBig_int.or_big_int n1 n2))
+
+  | VBinOp (bop,e1,e2,t) -> VBinOp (bop, norm_ve e1, norm_ve e2, t)
   | VUnOp (VNeg,VInt n,ConstInt) -> VInt (BatBig_int.neg n)
-  | VUnOp (uop,e,t) -> ve
+  | VUnOp (uop,e,t) -> VUnOp (uop, norm_ve e, t)
+  | VCast(t,e) when t = get_type_vexp e -> (* E.g., uint(uint(n)) => uint, int_const(100) => 100 *)
+    norm_ve e
   | VCast (t,e) -> VCast (t, norm_ve e)
   | VCond f -> VCond (norm_vf f)
-  | Ite (e1,e2,e3) -> ve
+  | Ite (e1,e2,e3) -> Ite (norm_ve e1, norm_ve e2, norm_ve e3)
+  | Uninterp (fname,args,t) -> Uninterp (fname, List.map norm_ve args, t)
 
 let normalize vf = norm_vf vf
-
-let rec fix_normalize x =
-  let x' = normalize x in
-    if equal_vf x' x then x'
-    else fix_normalize x'
 
 (* assume input is conjunctive invariant *)
 let rec vf_to_set : vformula -> FormulaSet.t
@@ -157,11 +119,12 @@ let rec vf_to_set : vformula -> FormulaSet.t
   match vf with
   | VTrue | VFalse -> FormulaSet.singleton vf
   | VAnd (f1,f2) -> FormulaSet.union (vf_to_set f1) (vf_to_set f2)
-  | VBinRel _ | SigmaEqual _ | NoOverFlow _ -> FormulaSet.singleton vf
-  | VNot _ -> raise (Failure "vf_to_set : VNot")
-  | VOr _ -> raise (Failure "vf_to_set : VOr")
+  | VBinRel _ -> FormulaSet.singleton vf
+  | SigmaEqual _ | NoOverFlow _ -> FormulaSet.singleton vf
+  | VNot _ -> FormulaSet.singleton vf
+  | VOr _ -> FormulaSet.singleton vf
   | Imply _ -> raise (Failure "vf_to_set : Imply")
-  | ForAll _ -> raise (Failure "vf_to_set : ForAll")
+  | ForAll _ -> FormulaSet.singleton vf
   | Label _ -> raise (Failure "vf_to_set : Label")
 
 let set_to_vf : FormulaSet.t -> vformula 
@@ -174,13 +137,13 @@ let set_to_vf : FormulaSet.t -> vformula
 let compress : vformula -> vformula
 = fun vf -> set_to_vf (vf_to_set vf)
 
-let rec fix x =
-  let x' = compress (normalize x) in
-    if equal_vf x' x then x'
-    else fix x'
+let rec fix f x =
+  let x' = f x in
+  if equal_vf x' x then x'
+  else fix f x'
 
 let simplify : vformula -> vformula
-= fun vf -> fix vf
+= fun vf -> fix (fun x -> compress (normalize x)) vf
 
 (*****************************)
 (*****************************)
@@ -197,16 +160,18 @@ let rec msg_num_const : Mem.t -> vformula -> vformula
   | VBinRel (VEq, VVar (x,xt), VInt n)
   | VBinRel (VGeq, VInt n, VVar (x,xt)) ->
     let itv = Val.itv_of (Mem.find2 (x,xt) mem) in
+    (* NOTE: dangerous if analysis is not bit-precise *)
     if is_uint256 xt && Itv.is_bot itv then VFalse
     else
     (match itv with
      | Itv (V l, V u) when BatBig_int.equal l u ->
        VBinRel (VEq, VVar (x,xt), VInt n)
-     | _ -> vf) 
+     | _ -> vf)
   | VBinRel _ -> vf
   | SigmaEqual _ | NoOverFlow _ -> vf
+  | ForAll _ -> vf
   | VNot _ | VOr _
-  | Imply _ | ForAll _ | Label _ -> raise (Failure "msg_num_const")
+  | Imply _ | Label _ -> raise (Failure "msg_num_const")
 
 let massage_numeric_constraints : vformula -> vformula
 = fun vf ->
@@ -232,8 +197,8 @@ let rec include_pow_vf : vformula -> bool
   | VOr (f1,f2) -> include_pow_vf f1 || include_pow_vf f2
   | VBinRel (rel,e1,e2) -> include_pow_ve e1 || include_pow_ve e2
   | Imply (f1,f2) -> include_pow_vf f1 || include_pow_vf f2
-  | SigmaEqual (e,v) -> include_pow_ve e
-  | NoOverFlow v -> false
+  | SigmaEqual (x,e) -> include_pow_ve e
+  | NoOverFlow _ -> false
   | ForAll (vars,f) -> include_pow_vf f
   | Label (l,f) -> include_pow_vf f
 
@@ -249,6 +214,7 @@ and include_pow_ve : vexp -> bool
   | VCast (_,e) -> include_pow_ve e
   | VCond f -> include_pow_vf f
   | Ite (e1,e2,e3) -> include_pow_ve e1 || include_pow_ve e2 || include_pow_ve e3
+  | Uninterp (_,args,_) -> List.fold_left (fun acc e' -> include_pow_ve e' || acc) false args
 
 let rec rm_pow_vf : Mem.t -> vformula -> vformula * vexp list
 = fun mem vf ->
@@ -273,8 +239,7 @@ let rec rm_pow_vf : Mem.t -> vformula -> vformula * vexp list
     let (f1',lst1) = rm_pow_vf mem f1 in
     let (f2',lst2) = rm_pow_vf mem f2 in
     (Imply (f1',f2'), lst1 @ lst2)
-  | SigmaEqual _ -> (vf,[])
-  | NoOverFlow _ -> (vf,[])
+  | SigmaEqual _ | NoOverFlow _ -> (vf,[])
   | ForAll (vars,f) ->
     let (f',lst) = rm_pow_vf mem f in
     (ForAll (vars, f'), lst)
@@ -291,10 +256,28 @@ and rm_pow_ve : Mem.t -> vexp -> vexp * vexp list
     let (e1',lst1) = rm_pow_ve mem e1 in
     let (e2',lst2) = rm_pow_ve mem e2 in
     let ve' = VBinOp (VPower,e1',e2',t) in
+    let itv_e1' = Val.itv_of (ItvSem2.eval_ve e1' mem) in
     let itv_ve' = Val.itv_of (ItvSem2.eval_ve ve' mem) in
-    if Itv.is_const itv_ve' then
-      (VInt (Itv.lower_int itv_ve'), lst1 @ lst2)
-    else (VVar (gen_newsym t), lst1 @ lst2)
+    (match !Options.mode with
+     | "exploit" ->
+       (* Why casting is needed? *)
+       (* uint result = ...; *)
+       (* (2 ** result) + uint8 => common type: 'uint256'. *)
+       (* However, 2**18 + uint8 => common type: 'uint24' *)
+       (* Thus, output uint(2**18) by explicitly casting. *)
+       if Itv.is_const itv_ve' then
+         let ve'' = VInt (Itv.lower_int itv_ve') in
+         let ve'' = if t=ConstInt then ve'' else VCast (t,ve'') in
+         (ve'', lst1 @ lst2)
+       else if Itv.is_const itv_e1' then
+         let ve'' = VInt (BatBig_int.pow (Itv.lower_int itv_e1') (BatBig_int.of_int 18)) in
+         let ve'' = if t=ConstInt then ve'' else VCast (t,ve'') in
+         (ve'', e2'::(lst1 @ lst2))
+       else (VVar (gen_newsym t), lst1 @ lst2)
+     | _ ->
+       if Itv.is_const itv_ve' then
+         (VCast (t, VInt (Itv.lower_int itv_ve')), lst1 @ lst2)
+       else (VVar (gen_newsym t), lst1 @ lst2))
   | VBinOp (bop,e1,e2,t) ->
     let (e1',lst1) = rm_pow_ve mem e1 in
     let (e2',lst2) = rm_pow_ve mem e2 in
@@ -325,15 +308,92 @@ and rm_pow_ve : Mem.t -> vexp -> vexp * vexp list
     let (e2',lst2) = rm_pow_ve mem e2 in
     let (e3',lst3) = rm_pow_ve mem e3 in
     (Ite (e1', e2', e3'), lst1 @ lst2 @ lst3)
+  | Uninterp (fname,args,typ) ->
+    List.fold_left (fun (acc_args,acc_lst) e ->
+      let (e',lst) = rm_pow_ve mem e in
+      (acc_args @ [e'], acc_lst @ lst)
+    ) ([],[]) args
+    |> (fun (args',lst') -> (Uninterp (fname,args',typ), lst'))
 
 let remove_pow : vformula -> vformula
 = fun vf ->
-  let (pre,sc) = split_implication vf in
+  let (pre,sc) = if !Options.mode="exploit" then split_vc vf else split_implication vf in
   let mem = ItvAnalysis2.run pre in (* perform interval analysis on formula *)
   let (pre',lst1) = rm_pow_vf mem pre in
   let (sc',lst2) = rm_pow_vf mem sc in
-  (* verification mode => no concretizations are performed. *)
-  let _ = assert (List.length (lst1 @ lst2) = 0) in
-  let final = Imply (pre',sc') in
-  let _ = assert (not (include_pow_vf final)) in
+  (* verify mode => no concretizations are performed. *)
+  let _ = assert (!Options.mode="exploit" || List.length (lst1 @ lst2) = 0) in
+  let new_f =
+    List.fold_left (fun acc ve ->
+      let f' = VBinRel (VEq, ve, VInt (BatBig_int.of_int 18)) in
+      if equal_vf acc VTrue then f' else VAnd (acc, f')
+    ) VTrue (lst1 @ lst2) in
+  let final = if !Options.mode="exploit" then VAnd (VAnd (pre',new_f), VNot sc') else Imply (pre',sc') in
+  (* let _ = assert (not (include_pow_vf final)) in *)
+  let _ = assert (not (!Options.mode="exploit") || not (include_pow_vf final)) in
   final
+
+let rec prop_eq_vf : vformula -> vformula -> vformula
+= fun whole vf ->
+  match vf with
+  | VTrue | VFalse -> vf
+  | VNot f -> VNot (prop_eq_vf whole f)
+  | VAnd (f1,f2) -> (* VAnd (prop_eq_vf whole f1, prop_eq_vf whole f2)  *)
+    let f1' = compress (prop_eq_vf whole f1) in
+    let f2' = compress (prop_eq_vf whole f2) in
+    VAnd (f1',f2')
+  | VOr (f1,f2) -> VOr (prop_eq_vf whole f1, prop_eq_vf whole f2)
+  | VBinRel(VEq,e1,e2) when is_uintkind (get_type_vexp e1) -> VBinRel (VEq, e1, prop_eq_ve whole vf e2)
+  | VBinRel (brel,e1,e2) -> VBinRel (brel, prop_eq_ve whole vf e1, prop_eq_ve whole vf e2)
+  | Imply (f1,f2) -> Imply (prop_eq_vf whole f1, prop_eq_vf whole f2)
+  | SigmaEqual _ | NoOverFlow _ -> vf
+  | ForAll (bvs,f) -> ForAll (bvs, prop_eq_vf whole f)
+  | Label (l,f) -> Label (l, prop_eq_vf whole f)
+
+(* add 'ctx' to avoid trivial transformation (e.g., ... /\ a=b /\ ... => ... /\ b=b /\ ... ) *)
+and prop_eq_ve : vformula -> vformula -> vexp -> vexp
+= fun whole ctx ve ->
+  match ve with
+  | VInt _ -> ve
+    (* the goal is to make forms that can be checked with templates *)
+    (* O: tmp=b[f] /\ tmp>=v ~> b[f]>=v *)
+    (* X: b' = write (b'',f,b''[f]-v]) /\ b = write (b',t,b'[t]+v) ~>
+     *    b = write (write(b'',f,b''[f]-v), t, (write(b'',f',b''[f]-v)[t] + v) *)
+  | VVar x when not (is_mapping (snd x)) ->
+    let state = match whole with Imply (pre,con) -> pre | _ -> assert false in
+    let reps = collect_reps ctx state x in
+    if ExpSet.is_empty reps then ve
+    else
+      let rep = ExpSet.choose reps in
+      (match rep with
+       | VInt n -> VCast (snd x, VInt n) | _ -> rep)
+  | VVar x -> ve
+  | Read (e1,e2,t) -> Read (prop_eq_ve whole ctx e1, prop_eq_ve whole ctx e2, t)
+  | Write (e1,e2,e3) -> Write (prop_eq_ve whole ctx e1, prop_eq_ve whole ctx e2, prop_eq_ve whole ctx e3)
+  | VBinOp (bop,e1,e2,t) -> VBinOp (bop, prop_eq_ve whole ctx e1, prop_eq_ve whole ctx e2, t)
+  | VUnOp (uop,e,t) -> VUnOp (uop, prop_eq_ve whole ctx e, t)
+  | VCast (t,e) -> VCast (t, prop_eq_ve whole ctx e)
+  | VCond f -> VCond (prop_eq_vf whole f)
+  | Ite (e1,e2,e3) -> Ite (prop_eq_ve whole ctx e1, prop_eq_ve whole ctx e2, prop_eq_ve whole ctx e3)
+  | Uninterp (fname,args,typ) -> Uninterp (fname, List.map (prop_eq_ve whole ctx) args, typ)
+
+(* collect replacements from conjuncts that are not ctx *)
+and collect_reps : vformula -> vformula -> var -> ExpSet.t
+= fun ctx vf target ->
+  match vf with
+  | VTrue | VFalse -> ExpSet.empty
+  | VNot _ -> ExpSet.empty
+  | VAnd (f1,f2) -> ExpSet.union (collect_reps ctx f1 target) (collect_reps ctx f2 target)
+  | VOr (f1,f2) -> ExpSet.empty
+  | VBinRel (VEq, VVar x, VBinOp (VDiv,_,_,_)) -> ExpSet.empty
+  | VBinRel (VEq, VVar x, Ite _) -> ExpSet.empty
+  | VBinRel (VEq, VVar x, ve2) when target=x && not (equal_vf ctx vf) ->
+    ExpSet.singleton ve2
+  | VBinRel _ -> ExpSet.empty
+  | Imply _ -> ExpSet.empty
+  | SigmaEqual _ | NoOverFlow _ -> ExpSet.empty
+  | ForAll (vars,f) -> ExpSet.empty
+  | Label (_,f) -> collect_reps ctx f target
+
+let propagate_eq : vformula -> vformula
+= fun vf -> prop_eq_vf vf vf

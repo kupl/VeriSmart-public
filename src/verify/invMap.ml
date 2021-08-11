@@ -37,11 +37,3 @@ let to_string : t -> string
     Node.to_string k ^ " -> " ^ to_string_vformula d ^ "\n"
   ) m ""
   ^ "]"
-
-(* propagte transaction invariant to loop headers *)
-(*
-let prop_tinv : triple -> triple
-= fun (tinv,lmap,fspecs) ->
-  let lmap' = LoopInvMap.map (fun _ d -> simplify (VAnd (tinv, d))) lmap in
-  (tinv, lmap', fspecs)
-*)

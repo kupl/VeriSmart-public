@@ -3,18 +3,23 @@ open Lang
 open Options
 
 type query = {
-  vc: vformula;
-  vc2: vformula;
+  vc: vformula;         (* safety propery of a query per path. *)
+  vc2: vformula;        (* vc for generating lasting inputs.   *)
   kind: kind;
   loc: loc;
-  org_q: origin;
-  path: Path.t;
-  src_f: fkey;
-  sc_src: string;
+  org_q: origin;        (* original expression in the source code *)
+  path: Path.t;         (* basic path wherein vc was generated *)
+  src_f: fkey;          (* function signature where vc was generated *)
+  sc_src: string;       (* safety condition at source-code level *)
+  attacker_src: string; (* attacker (ether receiver) at source-code level; only valid for leaking detection *)
+  eth_src: string       (* weis to be transferred to attacker at source-code level; only valid for leaking detection *)
 }
 
 and status = Proven | UnProven | Disproven
-and kind = IO | DZ | ACCESS | ASSERT | ERC20 | ERC721 | LEAK | SUICIDE
+and kind =
+  | IO | DZ | ASSERT | KILL
+  | ETH_LEAK | ERC20
+
 and origin = Org_Stmt of stmt | Org_Exp of exp | Org_Func of string
 
 let code_transfer_sender_has_enough_money = -100
@@ -32,6 +37,8 @@ let code_approve_set = -92
 let code_balance_sum_no_overflow = -91
 let code_total_ge_balance = -90
 
+let code_public_getter = -10
+
 let to_string_status status =
   match status with
   | Proven -> "proven"
@@ -42,23 +49,19 @@ let to_string_kind kind =
   match kind with
   | IO -> "integer over/underflow"
   | DZ -> "division-by-zero"
-  | ACCESS -> "access control"
   | ASSERT -> "assertion"
+  | KILL -> "kill-anyone"
+  | ETH_LEAK -> "ether-leaking"
   | ERC20 -> "ERC20 standard"
-  | ERC721 -> "ERC721 standard"
-  | LEAK -> "ether-leaking"
-  | SUICIDE -> "suicidal"
 
 let to_string_kind_simple kind =
   match kind with
   | IO -> "IO"
   | DZ -> "DZ"
-  | ACCESS -> "ACCESS"
   | ASSERT -> "ASSERT"
+  | KILL -> "KA"
+  | ETH_LEAK -> "ETH_LEAK"
   | ERC20 -> "ERC20"
-  | ERC721 -> "ERC721"
-  | LEAK -> "LEAK"
-  | SUICIDE -> "SUICIDE"
 
 let to_string_origin ?(report=false) : origin -> string
 = fun org ->
@@ -109,7 +112,7 @@ let to_string_standard_src (k,l,s) =
   else if l = code_approve_set then                      "[approve] The allowance should be set properly"
   else if l = code_balance_sum_no_overflow then          "[invariant] sum of balances should not overflow"
   else if l = code_total_ge_balance then                 "[invariant] totalSupply should be greater than or equal to any balances"
-  else failwith "Unsupported code"
+  else failwith ("Unexpected assertion code: " ^ to_string_kind_simple k ^ ", " ^ string_of_int l ^ ", " ^ s)
 
 let to_string_src (k,l,s) =
   if l>0 then "line " ^ string_of_int l ^ ", " ^ s
