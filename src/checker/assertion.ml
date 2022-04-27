@@ -104,17 +104,17 @@ let str_total_ge_balance () =
     require ((" ^ !total_name ^ " >= " ^ !balance_name ^ "[addr]), \"valismartest_falsified\");
   }"
 
-let erc20_sc_src loc =
-  if loc = code_transfer_sender_has_enough_money then str_transfer_sender_has_enough_money () else
-  if loc = code_transfer_sender_bal_dec then str_sender_transfer_sender_bal_dec () else
-      if loc = code_transfer_recipient_bal_inc then str_transfer_recipient_bal_inc () else
-      if loc = code_transferFrom_from_bal_enough then str_transferFrom_bal_enough () else
-      if loc = code_transferFrom_sender_allow_enough then str_transferFrom_sender_allow_enough () else
-      if loc = code_transferFrom_from_bal_dec then str_transferFrom_from_bal_dec () else
-      if loc = code_transferFrom_to_bal_inc then str_transferFrom_to_bal_inc () else
-      if loc = code_transferFrom_sender_allow_dec then str_transferFrom_sender_allow_dec () else
-      if loc = code_balance_sum_no_overflow then str_balance_sum_no_overflow () else
-      if loc = code_total_ge_balance then str_total_ge_balance ()
+let erc20_sc_src locid =
+  if locid = code_transfer_sender_has_enough_money then str_transfer_sender_has_enough_money ()
+  else if locid = code_transfer_sender_bal_dec then str_sender_transfer_sender_bal_dec ()
+  else if locid = code_transfer_recipient_bal_inc then str_transfer_recipient_bal_inc ()
+  else if locid = code_transferFrom_from_bal_enough then str_transferFrom_bal_enough ()
+  else if locid = code_transferFrom_sender_allow_enough then str_transferFrom_sender_allow_enough ()
+  else if locid = code_transferFrom_from_bal_dec then str_transferFrom_from_bal_dec ()
+  else if locid = code_transferFrom_to_bal_inc then str_transferFrom_to_bal_inc ()
+  else if locid = code_transferFrom_sender_allow_dec then str_transferFrom_sender_allow_dec ()
+  else if locid = code_balance_sum_no_overflow then str_balance_sum_no_overflow ()
+  else if locid = code_total_ge_balance then str_total_ge_balance ()
   else failwith "assertion.ml : collect_queries"
 
 let collect_queries : Global.t -> vformula -> Path.t -> stmt -> query list
@@ -124,10 +124,14 @@ let collect_queries : Global.t -> vformula -> Path.t -> stmt -> query list
     let sc = convert_bexp e in
     let vc = Imply (vf, sc) in
     let sc_src = to_string_exp ~report:true e in
-    [{vc=vc; vc2=sc; kind=ASSERT; loc=loc; org_q=Org_Exp e; path=path; src_f=Path.get_fkey path; sc_src=sc_src; attacker_src=""; eth_src=""}]
+    [{vc=vc; vc2=sc; kind=ASSERT; qloc=loc.line; org_q=Org_Exp e; path=path; src_f=Path.get_fkey path; sc_src=sc_src; attacker_src=""; eth_src=""}]
   | Assert (e,"erc20",loc) when !check_erc20 ->
     let sc = convert_bexp e in
     let vc = Imply (vf, sc) in
-    let sc_src = erc20_sc_src loc in
-    [{vc=vc; vc2=sc; kind=ERC20; loc=loc; org_q=Org_Exp e; path=path; src_f=Path.get_fkey path; sc_src=sc_src; attacker_src=""; eth_src=""}]
+    let sc_src = erc20_sc_src loc.line in
+    [{vc=vc; vc2=sc; kind=ERC20; qloc=loc.line; org_q=Org_Exp e; path=path; src_f=Path.get_fkey path; sc_src=sc_src; attacker_src=""; eth_src=""}]
+  (* | Assert (e,"reentrancy",loc) ->
+    let sc = convert_bexp e in
+    let vc = Imply (vf, sc) in
+    [{vc=vc; vc2=sc; kind=RE_ENT; loc=loc; org_q=Org_Exp e; path=path; src_f=Path.get_fkey path; sc_src=""}] *)
   | _ -> []

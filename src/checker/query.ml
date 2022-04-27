@@ -6,7 +6,7 @@ type query = {
   vc: vformula;         (* safety propery of a query per path. *)
   vc2: vformula;        (* vc for generating lasting inputs.   *)
   kind: kind;
-  loc: loc;
+  qloc: int;
   org_q: origin;        (* original expression in the source code *)
   path: Path.t;         (* basic path wherein vc was generated *)
   src_f: fkey;          (* function signature where vc was generated *)
@@ -19,8 +19,10 @@ and status = Proven | UnProven | Disproven
 and kind =
   | IO | DZ | ASSERT | KILL
   | ETH_LEAK | ERC20
+  | RE_EL | RE
+  | TX_ORG
 
-and origin = Org_Stmt of stmt | Org_Exp of exp | Org_Func of string
+and origin = Org_Stmt of stmt | Org_Exp of exp | Org_Func of fkey
 
 let code_transfer_sender_has_enough_money = -100
 let code_transfer_sender_bal_dec = -99
@@ -53,6 +55,9 @@ let to_string_kind kind =
   | KILL -> "kill-anyone"
   | ETH_LEAK -> "ether-leaking"
   | ERC20 -> "ERC20 standard"
+  | RE_EL -> "reentrancy-leaking"
+  | RE -> "reentrancy"
+  | TX_ORG -> "tx origin"
 
 let to_string_kind_simple kind =
   match kind with
@@ -62,20 +67,23 @@ let to_string_kind_simple kind =
   | KILL -> "KA"
   | ETH_LEAK -> "ETH_LEAK"
   | ERC20 -> "ERC20"
+  | RE_EL -> "RE_EL"
+  | RE -> "RE"
+  | TX_ORG -> "TX_ORG"
 
 let to_string_origin ?(report=false) : origin -> string
 = fun org ->
   match org with
   | Org_Stmt s -> to_string_stmt ~report s
   | Org_Exp e -> to_string_exp ~report e
-  | Org_Func s -> s
+  | Org_Func f -> to_string_fkey f
 
 let compare_query : query -> query -> int
 = fun q1 q2 ->
   if Stdlib.compare q1.kind q2.kind = 0 then
-    if Stdlib.compare q1.loc q2.loc = 0 then
+    if Stdlib.compare q1.qloc q2.qloc = 0 then
       BatString.compare (to_string_origin ~report:true q1.org_q) (to_string_origin ~report:true q2.org_q)
-    else Stdlib.compare q1.loc q2.loc
+    else Stdlib.compare q1.qloc q2.qloc
   else Stdlib.compare q1.kind q2.kind
 
 let sort : query list -> query list
@@ -85,7 +93,7 @@ let sort : query list -> query list
 let group : query list -> query list list
 = fun qs -> BatList.group compare_query qs
 
-type src = kind * loc * string (* location in the original source code *)
+type src = kind * int * string (* line in the original source code *)
 
 let compare_src : src -> src -> int
 = fun (k1,l1,s1) (k2,l2,s2) ->
@@ -98,7 +106,7 @@ let compare_src : src -> src -> int
 let equal_src s1 s2 = (compare_src s1 s2 = 0)
 
 let get_src : query -> src
-= fun q -> (q.kind, q.loc, to_string_origin ~report:true q.org_q)
+= fun q -> (q.kind, q.qloc, to_string_origin ~report:true q.org_q)
 
 let to_string_standard_src (k,l,s) =
   if l = code_transfer_sender_has_enough_money then      "[transfer] The message sender should have enough tokens"

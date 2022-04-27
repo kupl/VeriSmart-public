@@ -18,14 +18,14 @@ let remove_node : node -> cfg -> cfg
 = fun n g ->
   { g with graph = G.remove_vertex g.graph n;
            stmt_map = BatMap.remove n g.stmt_map;
-           pre_set = BatSet.remove n g.pre_set;
+           outpreds_of_lh = BatSet.remove n g.outpreds_of_lh;
            lh_set = BatSet.remove n g.lh_set;
            lx_set = BatSet.remove n g.lx_set;
            continue_set = BatSet.remove n g.continue_set;
            break_set = BatSet.remove n g.break_set;
   }
 
-let fold_node f g acc = G.fold_vertex f g.graph acc 
+let fold_node f g acc = G.fold_vertex f g.graph acc
 let fold_edges f g acc = G.fold_edges f g.graph acc
 
 let find_stmt : node -> cfg -> stmt
@@ -33,6 +33,28 @@ let find_stmt : node -> cfg -> stmt
   try if n = Node.ENTRY || n = Node.EXIT then Skip
       else BatMap.find n g.stmt_map
   with _ -> raise (Failure ("No stmt found in the given node " ^ Node.to_string n))
+
+let is_undef_call : FuncMap.t -> stmt -> bool
+= fun fmap stmt ->
+  match stmt with
+  | _ when is_external_call stmt -> false
+  | Call (lvop,e,args,ethop,gasop,loc,_) when FuncMap.is_undef e (List.map get_type_exp args) fmap -> true
+  | _ -> false
+
+let is_internal_call : FuncMap.t -> id list -> stmt -> bool
+= fun fmap cnames stmt ->
+  match stmt with
+  | _ when is_external_call stmt -> false
+  | Call (lvop,e,args,ethop,gasop,loc,_) when is_undef_call fmap stmt -> false
+  | Call (_,Lv (Var (f,_)),_,_,_,_,_) -> true
+  | Call (_,Lv (MemberAccess (Lv (Var (x,_)),_,_,_)),_,_,_,_,_) when List.mem x cnames -> true
+  | _ -> false
+
+let is_internal_call_node : FuncMap.t -> id list -> node -> cfg -> bool
+= fun fmap cnames n g -> is_internal_call fmap cnames (find_stmt n g)
+
+let is_external_call_node : node -> cfg -> bool
+= fun n g -> is_external_call (find_stmt n g)
 
 let add_stmt : node -> stmt -> cfg -> cfg
 = fun n s g -> {g with stmt_map = BatMap.add n s g.stmt_map}
@@ -53,49 +75,52 @@ let rec has_break_cont : stmt -> bool
   | Seq (s1,s2) -> has_break_cont s1 || has_break_cont s2
   | Call _ -> false
   | Skip -> false
-  | If (e,s1,s2) -> has_break_cont s1 || has_break_cont s2
+  | If (e,s1,s2,_) -> has_break_cont s1 || has_break_cont s2
   | While _ -> false (* must consider outer loop only. *)
   | Break | Continue -> true
   | Return _ | Throw -> false
   | Assume _ | Assert _ | Assembly _ -> false
   | PlaceHolder -> assert false
+  | Unchecked (lst,_) -> assert false
 
 let rec trans : stmt -> node option -> node option -> (node * cfg) -> (node * cfg)
 = fun stmt lhop lxop (n,g) -> (* lhop : header of dominant loop, lxop : exit of dominant loop, n: interface node *)
   match stmt with
   | Seq (s,While (e,s')) when has_break_cont s ->
+    (* do-while with 'Break' or 'Continue' in loop-body *)
     let lh = Node.make () in
     let lx = Node.make () in
     let (n1,g1) = trans s (Some lh) (Some lx) (n,g) in
     let g2 = g1 |> add_node_stmt lh Skip |> add_edge n1 lh in
-    let (n3,g3) = trans (Assume (e,0)) (Some lh) (Some lx) (lh,g2) in
+    let (n3,g3) = trans (Assume (e, dummy_loc)) (Some lh) (Some lx) (lh,g2) in
     let (n4,g4) = trans s' (Some lh) (Some lx) (n3,g3) in
     let g5 = add_edge n4 lh g4 in
-    let (n6,g6) = trans (Assume (UnOp (LNot,e,EType Bool), 0)) lhop lxop (lh,g5) in
+    let (n6,g6) = trans (Assume (UnOp (LNot,e,EType Bool), dummy_loc)) lhop lxop (lh,g5) in
     let g7 = g6 |> add_node_stmt lx Skip |> add_edge n6 lx in
     let preds_of_lh = BatSet.of_list (pred lh g2) in
     let _ = assert (BatSet.mem n1 preds_of_lh) in
-    let g8 = {g7 with pre_set = BatSet.union preds_of_lh g7.pre_set; lh_set = BatSet.add lh g7.lh_set; lx_set = BatSet.add lx g7.lx_set} in
+    let g8 = {g7 with outpreds_of_lh = BatSet.union preds_of_lh g7.outpreds_of_lh; lh_set = BatSet.add lh g7.lh_set; lx_set = BatSet.add lx g7.lx_set} in
     (lx, g8)
   | Seq (s1,s2) -> trans s2 lhop lxop (trans s1 lhop lxop (n,g))
-  | If (e,s1,s2) ->
-    let (tn,g1) = trans (Assume (e,0)) lhop lxop (n,g) in (* tn: true branch assume node *)
+  | If (e,s1,s2,_) ->
+    let loc = match e with BinOp (_,_,_,einfo) -> einfo.eloc | _ -> dummy_loc in
+    let (tn,g1) = trans (Assume (e, loc)) lhop lxop (n,g) in (* tn: true branch assume node *)
     let (tbn,g2) = trans s1 lhop lxop (tn,g1) in
-    let (fn,g3) = trans (Assume (UnOp (LNot,e,EType Bool), 0)) lhop lxop (n,g2) in (* fn: false branch assume node *)
+    let (fn,g3) = trans (Assume (UnOp (LNot,e,EType Bool), loc)) lhop lxop (n,g2) in (* fn: false branch assume node *)
     let (fbn,g4) = trans s2 lhop lxop (fn,g3) in
     let join = Node.make () in
     let g5 = g4 |> add_node_stmt join Skip |> add_edge tbn join |> add_edge fbn join in
     (join, g5)
   | While (e,s) ->
     let lh = Node.make () in
-    let lx = Node.make () in
+    let lx = Node.make () in (* node id : lh + 1 *)
     let g1 = g |> add_node_stmt lh Skip |> add_edge n lh in
-    let (n2,g2) = trans (Assume (e,0)) (Some lh) (Some lx) (lh,g1) in
+    let (n2,g2) = trans (Assume (e,dummy_loc)) (Some lh) (Some lx) (lh,g1) in (* node id : lh + 2 *)
     let (n3,g3) = trans s (Some lh) (Some lx) (n2,g2) in
     let g4 = add_edge n3 lh g3 in
-    let (n5,g5) = trans (Assume (UnOp (LNot,e,EType Bool), 0)) lhop lxop (lh,g4) in
+    let (n5,g5) = trans (Assume (UnOp (LNot,e,EType Bool), dummy_loc)) lhop lxop (lh,g4) in
     let g6 = g5 |> add_node_stmt lx Skip |> add_edge n5 lx in
-    let g7 = {g6 with pre_set = BatSet.add n g6.pre_set; lh_set = BatSet.add lh g6.lh_set; lx_set = BatSet.add lx g6.lx_set} in
+    let g7 = {g6 with outpreds_of_lh = BatSet.add n g6.outpreds_of_lh; lh_set = BatSet.add lh g6.lh_set; lx_set = BatSet.add lx g6.lx_set} in
     (lx, g7)
   | Break ->
     let lx = (match lxop with Some lx -> lx | None -> raise (Failure "Loop exit should exist")) in
@@ -214,7 +239,7 @@ let rec double_loop : stmt -> stmt
   | Assign _ | Decl _ -> stmt
   | Seq (s1,s2) -> Seq (double_loop s1, double_loop s2)
   | Call _ | Skip -> stmt
-  | If (e,s1,s2) -> If (e, double_loop s1, double_loop s2)
+  | If (e,s1,s2,i) -> If (e, double_loop s1, double_loop s2, i)
   (* While (e) {s} ->
    * While (e) {s}; While (e) {s} ->
    * unroll each while-loop once. *)
@@ -223,6 +248,7 @@ let rec double_loop : stmt -> stmt
     Seq (While (e,s'), While (e,s'))
   | Break | Continue | Return _
   | Throw | Assume _ | Assert _ | Assembly _ | PlaceHolder -> stmt
+  | Unchecked (lst,loc) -> assert false
 
 let convert : stmt -> cfg
 = fun stmt ->

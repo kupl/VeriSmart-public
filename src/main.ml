@@ -18,7 +18,7 @@ let set_default_inline_depth () =
 
 let preprocess file =
   let lines = BatList.of_enum (BatFile.lines_of file) in
-  let (_,lst) = (* store cumulative byte size at the end of each line *) 
+  let (_,lst) = (* store cumulative byte size at the end of each line *)
     List.fold_left (fun (acc_eol,acc_lst) cur ->
       let eol = Bytes.length (Bytes.of_string cur) + 1 in
       let acc_eol' = eol + acc_eol in
@@ -35,7 +35,7 @@ let preprocess file =
   let pgm = if !Options.mode="exploit" then PreprocessExploit.run pgm else pgm in
   let pgm = MakeCfg.run pgm in
   let pgm = Inline.run pgm in (* inlining is performed on top of an initial cfg. *)
-  let global = Global.make_global_info pgm in
+  let global = Global.make_global_info pgm lines in
   (pgm, global, lines)
 
 let record_elapsed_time () =
@@ -49,18 +49,20 @@ let print_elapsed_time () =
 
 let do_mode_job (pgm,global,lines) =
   let paths = pgm |> CallGraph.remove_unreachable_funcs |> Path.generate in
+  let _ = PatternAnalysis.run global paths in
   match !Options.mode with
   | "exploit" ->
-     let qmap = Exploit.run global paths lines in
+     let qmap = Exploit.run global paths in
      ReportExploit.report ~pathnum:(Path.PathSet.cardinal paths) global qmap lines;
      record_elapsed_time ();
-     if !Options.json_report then ReportExploit.json global qmap else ()
+     if !Options.mk_report then ReportExploit.json global qmap else ()
   | "verify" ->
      let mem = ItvAnalysis.run pgm global paths in
+     let global = {global with mem = mem} in
      let qmap = Verifier.run global mem paths in
      Report.print qmap;
      record_elapsed_time ();
-     if !Options.json_report then Report.json qmap
+     if !Options.mk_report then Report.mk_json_report global qmap
   | _ -> assert false
 
 let main () =
@@ -78,7 +80,9 @@ let json_err : string -> unit
             ("errMsg", `String msg);
             ("result", `List [])] in
   let base = snd (BatString.replace (Filename.basename !inputfile) ".sol" "") in
-  let fname = "./output/" ^ base ^ ".json" in
+  let fname =
+    if !Options.outdir = "" then "./output/" ^ base ^ ".json"
+    else !Options.outdir ^ "/" ^ base ^ ".json" in
   let f = open_out fname in
   Printf.fprintf f "%s" (Yojson.Basic.pretty_to_string j);
   close_out f
@@ -96,6 +100,6 @@ let _ =
     prerr_endline (Printexc.to_string exc);
     prerr_endline (Printexc.get_backtrace());
     (match exc with
-     | CompilationError -> if !Options.json_report then json_err "Compilation Error"
-     | UnsupportedSolc -> if !Options.json_report then json_err "Unsupported Solc Provided"
-     | _ -> if !Options.json_report then json_err "Runtime Exception")
+     | CompilationError -> if !Options.mk_report then json_err "Compilation Error"
+     | UnsupportedSolc -> if !Options.mk_report then json_err "Unsupported Solc Provided"
+     | _ -> if !Options.mk_report then json_err "Runtime Exception")

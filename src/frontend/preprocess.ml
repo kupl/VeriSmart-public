@@ -37,12 +37,6 @@ let move_decl_to_cnstr pgm = move_p pgm
 (***********************)
 
 let separator = "__@"
-let tmpvar_cnt = ref 0
-let tmpvar = "Tmp"
-
-let gen_tmpvar ?(org="") ?(loc=(-1)) typ =
-  tmpvar_cnt:=!tmpvar_cnt+1;
-  Var (tmpvar^(string_of_int !tmpvar_cnt), dummy_vinfo_typ_org_loc typ org loc)
 
 let rec hastmp_lv lv =
   match lv with
@@ -75,7 +69,7 @@ and hastmp_s s =
     let b5 = match gasop with None -> false | Some e -> hastmp_e e in
     b1 || b2 || b3 || b4 || b5
   | Skip -> false
-  | If (e,s1,s2) -> hastmp_e e || hastmp_s s1 || hastmp_s s2
+  | If (e,s1,s2,_) -> hastmp_e e || hastmp_s s1 || hastmp_s s2
   | While (e,s) -> hastmp_e e || hastmp_s s
   | Break -> false
   | Continue -> false
@@ -85,6 +79,7 @@ and hastmp_s s =
   | Assume (e,_) -> hastmp_e e
   | Assert (e,_,_) -> hastmp_e e
   | Assembly _ | PlaceHolder -> false
+  | Unchecked (lst,loc) -> List.exists hastmp_s lst
 
 let hastmp_f (_,_,_,stmt,_) = hastmp_s stmt
 let hastmp_c (_,_,_,_,funcs,_) = List.exists hastmp_f funcs
@@ -118,7 +113,7 @@ let rec replace_tmpexp_e : exp -> exp * stmt
     (Lv lv,Assign (lv, BinOp (Add,Lv lv,Int (BatBig_int.of_int 1),{eloc=loc; etyp=typ; eid=0}),loc)) 
   | IncTemp (Lv lv,_,loc) -> (* postfix case *)
     let typ = get_type_lv lv in
-    let tmpvar = gen_tmpvar ~loc:loc typ in
+    let tmpvar = gen_tmpvar typ in
     (Lv tmpvar,Seq (Assign (tmpvar, Lv lv, loc),
                     Assign (lv, BinOp (Add,Lv lv,Int (BatBig_int.of_int 1),{eloc=loc; etyp=typ; eid=0}),loc)))
   | DecTemp (Lv lv,prefix,loc) when prefix ->
@@ -126,37 +121,38 @@ let rec replace_tmpexp_e : exp -> exp * stmt
     (Lv lv,Assign (lv, BinOp (Sub,Lv lv,Int (BatBig_int.of_int 1),{eloc=loc; etyp=typ; eid=0}),loc)) 
   | DecTemp (Lv lv,_,loc) -> (* postfix case *)
     let typ = get_type_lv lv in
-    let tmpvar = gen_tmpvar ~loc:loc typ in
+    let tmpvar = gen_tmpvar typ in
     (Lv tmpvar,Seq (Assign (tmpvar, Lv lv, loc),
                     Assign (lv, BinOp (Sub,Lv lv,Int (BatBig_int.of_int 1),{eloc=loc; etyp=typ; eid=0}),loc)))
   | CallTemp (Lv (Var (s,_)), params, ethop, gasop, einfo) when BatString.starts_with s "contract_init" ->
-    let tmpvar = gen_tmpvar ~loc:(einfo.eloc) einfo.etyp in (* einfo.etyp : return type of call expression *)
+    let tmpvar = gen_tmpvar einfo.etyp in (* einfo.etyp : return type of call expression *)
     let fst_arg = Lv (Var (get_name_userdef einfo.etyp,dummy_vinfo)) in
     (Lv tmpvar, Call (Some tmpvar, Lv (Var ("contract_init",dummy_vinfo)), fst_arg::params, ethop, gasop, einfo.eloc, einfo.eid))
   | CallTemp (Lv (MemberAccess (Cast (t,e),id,id_info,typ)), params, ethop, gasop, einfo) -> (* ... := cast(y).f(33) *)
-    let tmpvar = gen_tmpvar ~loc:(einfo.eloc) t in
-    (CallTemp (Lv (MemberAccess (Lv tmpvar,id,id_info,typ)), params, ethop, gasop, einfo), Assign (tmpvar, Cast (t,e), einfo.eloc))
+    let tmpvar = gen_tmpvar ~org:(Some (Cast (t,e))) t in
+    let exp' = CallTemp (Lv (MemberAccess (Lv tmpvar,id,id_info,typ)), params, ethop, gasop, einfo) in
+    let new_stmt = Assign (tmpvar, Cast (t,e), einfo.eloc) in
+    (exp', new_stmt)
   | CallTemp (e, params, ethop, gasop, einfo) ->
-    (* NOTE: currently, assume function variable's type is equal to its return type. *)
     if is_tuple einfo.etyp then
-      let tmpvars = List.map (gen_tmpvar ~org:(to_string_exp exp) ~loc:(einfo.eloc)) (tuple_elem_typs einfo.etyp) in
+      let tmpvars = List.map (gen_tmpvar ~org:(Some exp) ~loc:einfo.eloc.line) (tuple_elem_typs einfo.etyp) in
       let eoplst = List.map (fun tmp -> Some (Lv tmp)) tmpvars in
       let tuple = Tuple (eoplst, einfo.etyp) in
       (Lv tuple, Call (Some tuple, e, params, ethop, gasop, einfo.eloc, einfo.eid))
     else
-      let tmpvar = gen_tmpvar ~org:(to_string_exp exp) ~loc:(einfo.eloc) einfo.etyp in
+      let tmpvar = gen_tmpvar ~org:(Some exp) ~loc:einfo.eloc.line einfo.etyp in
       (Lv tmpvar, Call (Some tmpvar, e, params, ethop, gasop, einfo.eloc, einfo.eid))
   | CondTemp (e1,e2,e3,typ,loc) ->
     (match e2,e3 with
      | Lv (Tuple (eops1,t1)), Lv (Tuple (eops2,t2)) ->
        let _ = assert (t1 = t2) in
-       let tmpvars = List.map (gen_tmpvar ~org:(to_string_exp exp) ~loc:loc) (tuple_elem_typs t1) in
+       let tmpvars = List.map (gen_tmpvar ~org:(Some exp)) (tuple_elem_typs t1) in
        let tuple = Tuple (List.map (fun tmp -> Some (Lv tmp)) tmpvars, t1) in
-       (Lv tuple, Seq (Decl tuple, If (e1, Assign (tuple, e2, loc), Assign (tuple, e3, loc))))
+       (Lv tuple, Seq (Decl tuple, If (e1, Assign (tuple, e2, loc), Assign (tuple, e3, loc), dummy_ifinfo)))
      | Lv (Tuple _),_ | _, Lv (Tuple _) -> assert false
      | _ ->
-       let tmpvar = gen_tmpvar ~org:(to_string_exp exp) ~loc:loc typ in
-       (Lv tmpvar, Seq (Decl tmpvar, If (e1, Assign (tmpvar, e2, loc), Assign (tmpvar, e3, loc)))))
+       let tmpvar = gen_tmpvar ~org:(Some exp) typ in
+       (Lv tmpvar, Seq (Decl tmpvar, If (e1, Assign (tmpvar, e2, loc), Assign (tmpvar, e3, loc), dummy_ifinfo))))
   | AssignTemp (lv,e,loc) -> (Lv lv, Assign (lv,e,loc))
   | e -> raise (Failure ("replace_tmpexp_e : " ^ (to_string_exp e)))
 
@@ -165,7 +161,7 @@ and replace_tmpexp_lv : lv -> lv * stmt
   match lv with
   | Var _ -> (lv,Skip)
   | MemberAccess (Cast (t,e),id,id_info,typ) ->
-    let tmpvar = gen_tmpvar ~org:(to_string_exp (Cast (t,e))) ~loc:id_info.vloc t in
+    let tmpvar = gen_tmpvar ~org:(Some (Cast (t,e))) t in
     (MemberAccess (Lv tmpvar,id,id_info,typ), Assign (tmpvar,Cast (t,e),id_info.vloc))
   | MemberAccess (e,id,id_info,typ) ->
     let (e',s) = replace_tmpexp_e e in
@@ -254,6 +250,9 @@ let desugar_tuple (lv,e,loc) =
 let rec replace_tmpexp_s : stmt -> stmt
 = fun stmt ->
   match stmt with
+  (* E.g., (bool success, ) := msg.sender.call.value(..)(..) *)
+  | Assign (lv, CallTemp (e,params,ethop,gasop,einfo), loc) ->
+    Call (Some lv, e, params, ethop, gasop, loc, einfo.eid)
   | Assign (lv,e,loc) ->
     let (lv',new_stmt1) = replace_tmpexp_lv lv in
     let (e',new_stmt2) = replace_tmpexp_e e in
@@ -284,9 +283,9 @@ let rec replace_tmpexp_s : stmt -> stmt
     let (gasop',s5) = replace_tmpexp_eop gasop in
     Seq (s1, Seq (s2, Seq (s3, Seq (s4, Seq (s5, Call (lvop',e',params',ethop',gasop',loc,site))))))
   | Skip -> stmt
-  | If (e,s1,s2) ->
+  | If (e,s1,s2,i) ->
     let (e',new_stmt) = replace_tmpexp_e e in
-    Seq (new_stmt, If (e',replace_tmpexp_s s1,replace_tmpexp_s s2))
+    Seq (new_stmt, If (e', replace_tmpexp_s s1, replace_tmpexp_s s2, i))
   | While (e,s) ->
     let (e',new_stmt) = replace_tmpexp_e e in
     Seq (new_stmt, While (e', Seq(replace_tmpexp_s s,new_stmt)))
@@ -312,6 +311,9 @@ let rec replace_tmpexp_s : stmt -> stmt
     Seq (new_stmt, Assert (e',vtyp,loc))
   | Assembly _ -> stmt
   | PlaceHolder -> stmt
+  | Unchecked (lst,loc) ->
+    let lst' = List.map replace_tmpexp_s lst in
+    Unchecked (lst',loc)
 
 let replace_tmpexp_f : func -> func
 = fun (id, params, ret_params, stmt, finfo) ->
@@ -343,8 +345,9 @@ let rec rmskip_s s =
   | Seq (Skip,s) -> rmskip_s s
   | Seq (s,Skip) -> rmskip_s s
   | Seq (s1,s2) -> Seq (rmskip_s s1,rmskip_s s2)
-  | If (e,s1,s2) -> If (e,rmskip_s s1,rmskip_s s2)
+  | If (e,s1,s2,i) -> If (e, rmskip_s s1, rmskip_s s2, i)
   | While (e,s) -> While (e,rmskip_s s)
+  | Unchecked (lst,loc) -> Unchecked (List.map rmskip_s lst, loc)
   | _ -> s
 
 let rmskip_f (fid, params, ret_params, stmt, finfo) = (fid, params, ret_params, rmskip_s stmt, finfo)
@@ -361,12 +364,12 @@ let rmskip p = p |> rmskip_p |> rmskip_p |> rmskip_p
 let rec norm_s ret_params stmt =
   match stmt with
   | Seq (s1,s2) -> Seq (norm_s ret_params s1, norm_s ret_params s2)
-  | If (e,s1,s2) -> If (e, norm_s ret_params s1, norm_s ret_params s2)
+  | If (e,s1,s2,i) -> If (e, norm_s ret_params s1, norm_s ret_params s2, i)
   | While (e,s) -> While (e, norm_s ret_params s)
   | Call (lvop,
           Lv (MemberAccess (Lv (IndexAccess _) as arr, fname, fname_info, typ)),
           exps, ethop, gasop, loc, site) ->
-    let tmp = gen_tmpvar ~org:(to_string_exp arr) ~loc:loc (get_type_exp arr) in
+    let tmp = gen_tmpvar ~org:(Some arr) (get_type_exp arr) in
     let assign = Assign (tmp, arr, loc) in
     let e' = Lv (MemberAccess (Lv tmp, fname, fname_info, typ)) in
     let call = Call (lvop, e', exps, ethop, gasop, loc, site) in
@@ -376,7 +379,7 @@ let rec norm_s ret_params stmt =
   | Return (Some (Lv (Var _)), loc) -> stmt
   | Return (Some e,loc) ->
     let lv = params_to_lv ret_params in
-    let assign = Assign (lv,e,loc) in
+    let assign = Assign (lv, e, loc) in
     let ret_stmt = Return (Some (Lv lv), loc) in
     let stmt' = Seq (assign, ret_stmt) in
     stmt'
@@ -425,17 +428,20 @@ let rec ufd_s : (id * typ) list -> func list -> stmt -> stmt
        let lib_funcs' = List.filter (fun f -> List.mem (get_finfo f).scope_s cand_lib_names) lib_funcs in
        let lib_name = find_matching_lib_name lib_funcs' fname arg_typs in (* from libs, using fname and arg_typs, find corresponding library name *)
        let lib_typ = Contract lib_name in
-       let lib_var = Lv (Var (lib_name, dummy_vinfo_with_typ lib_typ)) in
+       let lib_var = Lv (Var (lib_name, mk_vinfo ~typ:lib_typ ())) in
        Call (lvop,Lv (MemberAccess (lib_var,fname,fname_info,typ)),e::args,ethop,gasop,loc,site))
   | Call _ -> stmt 
   | Assign _ -> stmt
   | Decl _ -> stmt
   | Skip -> stmt
   | Seq (s1,s2) -> Seq (ufd_s lst lib_funcs s1, ufd_s lst lib_funcs s2)
-  | If (e,s1,s2) -> If (e, ufd_s lst lib_funcs s1, ufd_s lst lib_funcs s2) 
+  | If (e,s1,s2,i) -> If (e, ufd_s lst lib_funcs s1, ufd_s lst lib_funcs s2, i)
   | While (e,s) -> While (e, ufd_s lst lib_funcs s)
   | Break | Continue | Return _ | Throw 
   | Assume _ | Assert _ | Assembly _ | PlaceHolder -> stmt
+  | Unchecked (blk,loc) ->
+    let blk' = List.map (ufd_s lst lib_funcs) blk in
+    Unchecked (blk',loc)
 
 let ufd_f lst lib_funcs (fid, params, ret_params, stmt, finfo) = (fid, params, ret_params, ufd_s lst lib_funcs stmt, finfo)
 
@@ -481,13 +487,10 @@ let rec add_libname_s : id -> stmt -> stmt
 = fun lib stmt ->
   match stmt with
   | Seq (s1,s2) -> Seq (add_libname_s lib s1, add_libname_s lib s2)  
-  | If (e,s1,s2) -> If (e, add_libname_s lib s1, add_libname_s lib s2)
+  | If (e,s1,s2,i) -> If (e, add_libname_s lib s1, add_libname_s lib s2, i)
   | Call (lvop,Lv (Var (v,vinfo)),args,ethop,gasop,loc,site) ->
-    (* NOTE: Library contract is not allowed to inherit some other contracts (or libraries), i.e., libraries cannot be children.
-     * NOTE: Also, libraries cannot be inheritied from, i.e., libaries cannot be parents.
-     * NOTE: Thus, it is okay to simply add a library name for all function calls. *)
-    let libvar = Lv (Var (lib, dummy_vinfo_with_typ (Contract lib))) in
-    Call (lvop, Lv (MemberAccess (libvar, v, vinfo, vinfo.vtype)), args, ethop, gasop, loc, site)
+    let libvar = Lv (Var (lib, mk_vinfo ~typ:(Contract lib) ())) in
+    Call (lvop, Lv (MemberAccess (libvar, v, vinfo, vinfo.vtyp)), args, ethop, gasop, loc, site)
   | While (e,s) -> While (e, add_libname_s lib s)
   | _ -> stmt 
 
@@ -504,7 +507,7 @@ let add_libname_c c =
 
 let add_libname_p contracts =
   List.map (fun c ->
-    if is_library c then add_libname_c c
+    if is_library_kind c then add_libname_c c
     else c
   ) contracts
 
@@ -515,6 +518,15 @@ let add_libname_fcalls_in_lib p = add_libname_p p
 (** Merge into one contract **)
 (*****************************)
 (*****************************)
+
+let find_next_contracts : contract list -> id -> contract list
+= fun lst target ->
+  let names = List.map get_cname lst in
+  let target_idx = match BatList.index_of target names with Some idx -> idx | None -> assert false in
+  BatList.fold_lefti (fun acc i c ->
+    if i<target_idx+1 then acc
+    else acc@[c]
+  ) [] lst
 
 let add_func : func -> contract -> contract
 = fun f ((cid,decls,structs,enums,funcs,cinfo) as contract) ->
@@ -544,7 +556,7 @@ let add_decl : state_var_decl -> contract -> contract
   let (cid,decls,structs,enums,funcs,cinfo) = contract in
   (* let b = List.exists (equal_gdecl cand) decls in
     if b then contract
-    else *) (cid, cand::decls, structs, enums, funcs, cinfo)
+    else *) (cid, decls@[cand], structs, enums, funcs, cinfo)
 
 let add_decl2 : contract -> contract -> contract
 = fun _from _to ->
@@ -619,7 +631,7 @@ let copy_c : contract list -> contract -> contract
             if List.length matching = 1 then acc @ [List.hd matching]
             else
               let _ = if List.length (parent |> get_cnstr |> get_params) != 0 then prerr_endline "WARNING: the contract may be abstract" in
-              acc @ [(get_cname parent, [], -1)]
+              acc @ [(get_cname parent, [], dummy_loc)]
           ) [] (List.rev parents) in (* reverse to put parent's mod on the front. *)
         let finfo' = {finfo with mod_list2 = cnstr_mod_calls'} in
         update_finfo finfo' f
@@ -631,14 +643,23 @@ let copy_c : contract list -> contract -> contract
 let copy_p : pgm -> pgm
 = fun p ->
   List.fold_left (fun acc c ->
-    let nids_of_parents = get_inherit_order c in
-    (* NOTE: when copying to some contracts, consider parents in the original contract, not accumualted ones. *)
-    (* Thus, 'find_contract_nid p', not 'find_contract_nid acc' *)
-    let parents = List.tl (List.map (find_contract_nid p) nids_of_parents) in
-    let c' = copy_c parents c in
-    let acc' = modify_contract c' acc in
-    acc'
+    (* when copying contracts to some contracts, consider parents in the original program. *)
+    (* let bases = Global.get_full_base_contracts p c in *)
+    let base_names_of_main = List.map get_cname (Global.get_full_base_contracts p (get_main_contract p)) in
+    if not (List.mem (get_cname c) base_names_of_main) then
+      let bases = Global.get_full_base_contracts p c in
+      let parents = find_next_contracts bases (get_cname c) in
+      let c' = copy_c parents c in
+      let acc' = modify_contract c' acc in
+      acc'
+    else
+      let bases = Global.get_full_base_contracts p (get_main_contract p) in
+      let parents = find_next_contracts bases (get_cname c) in
+      let c' = copy_c parents c in
+      let acc' = modify_contract c' acc in
+      acc'
   ) p p
+  (* |> (fun r -> let _ = assert false in r) *)
 
 let copy pgm = copy_p pgm
 
@@ -647,20 +668,6 @@ let copy pgm = copy_p pgm
 (** Replace 'super' **)
 (*********************)
 (*********************)
-
-let find_next : id list -> id -> id
-= fun lst target ->
-  let target_idx = match BatList.index_of target lst with Some idx -> idx | None -> assert false in
-  BatList.at lst (target_idx+1)
-
-let find_next_contracts : contract list -> id -> contract list
-= fun lst target ->
-  let names = List.map get_cname lst in
-  let target_idx = match BatList.index_of target names with Some idx -> idx | None -> assert false in
-  BatList.fold_lefti (fun acc i c ->
-    if i<target_idx+1 then acc 
-    else acc@[c]
-  ) [] lst
 
 let rec rs_s : contract list -> id -> stmt -> stmt
 = fun family cur_cname stmt ->
@@ -686,7 +693,7 @@ let rec rs_s : contract list -> id -> stmt -> stmt
     Call (lvop, Lv (MemberAccess (Lv (Var (matched_parent_name,xinfo)),id,id_info,typ)), args, ethop, gasop, loc, site)
   | Call _ -> stmt
   | Skip -> stmt
-  | If (e,s1,s2) -> If (e, rs_s family cur_cname s1, rs_s family cur_cname s2)
+  | If (e,s1,s2,i) -> If (e, rs_s family cur_cname s1, rs_s family cur_cname s2, i)
   | While (e,s) -> While (e, rs_s family cur_cname s)
   | _ -> stmt
 
@@ -710,13 +717,6 @@ let rs_p : pgm -> pgm
   let final_inherit = List.map (find_contract_nid p) nids_of_parents in
   let family_names = List.map get_cname final_inherit in
   List.fold_left (fun acc c ->
-    (* NOTE: If a contract is not in the final inheritance graph,
-     * NOTE: that means the super keywords in the contract need not be changed,
-     * NOTE: because the contract is irrelevant with the main contract,
-     * NOTE: i.e., the contract is dead code where there are no functions to be copied to the main contract.
-     * NOTE: Therefore, we skip those contracts without modifications, i.e., 'acc' in the 'else' case.
-     * NOTE: Without checking this condition, we may encounter exceptions,
-     * NOTE: since we cannot find next contracts, see 'find_next_contracts'. *)
     if List.mem (get_cname c) family_names then
       let c' = rs_c final_inherit c in
       modify_contract c' acc
@@ -734,17 +734,18 @@ let replace_super pgm = rs_p pgm
 let get_public_state_vars : contract -> (id * vinfo) list
 = fun c ->
   let decls = get_decls c in 
-  let decls' = List.filter (fun (_,_,vinfo) -> vinfo.vvis = Public && (is_uintkind vinfo.vtype || is_address vinfo.vtype)) decls in
+  let decls' = List.filter (fun (_,_,vinfo) -> vinfo.vvis = Public && (is_uintkind vinfo.vtyp || is_address vinfo.vtyp)) decls in
   List.map (fun (v,_,vinfo) -> (v,vinfo)) decls'
 
 (* generate getter functions for public state variables *)
 let add_getter_x : string -> int -> id * vinfo -> func
 = fun cname cnumid (x,xinfo) ->
-  let ret = (Translator.gen_param_name(), dummy_vinfo_with_typ xinfo.vtype) in
-  let stmt = Return (Some (Lv (Var (x,xinfo))), Query.code_public_getter) in
+  let ret = (Translator.gen_param_name(), mk_vinfo ~typ:xinfo.vtyp ()) in
+  let stmt = Return (Some (Lv (Var (x,xinfo))), mk_loc ~line:Query.code_public_getter ()) in
   let finfo = {is_constructor=false; is_payable=false; is_modifier=false;
-               mod_list=[]; mod_list2=[]; ret_param_loc = (-1);
-               fvis=External; fid=(-1); scope=cnumid; scope_s=cname; org_scope_s=cname; cfg=empty_cfg} in
+               mod_list=[]; mod_list2=[];
+               param_loc=dummy_loc; ret_param_loc=dummy_loc;
+               fvis=External; mutability = View; fid=(-1); floc=dummy_loc; scope=cnumid; scope_s=cname; org_scope_s=cname; cfg=empty_cfg} in
   gen_func ~fname:x ~params:[] ~ret_params:[ret] ~stmt:stmt ~finfo:finfo
 
 let add_getter_c : contract -> contract
@@ -783,8 +784,9 @@ let rec has_cnstr_calls_s : func list -> stmt -> bool
   | Skip -> false
   | Assume _ -> false
   | While (_,s) -> has_cnstr_calls_s cnstrs s
-  | If (_,s1,s2) -> has_cnstr_calls_s cnstrs s1 || has_cnstr_calls_s cnstrs s2 
+  | If (_,s1,s2,_) -> has_cnstr_calls_s cnstrs s1 || has_cnstr_calls_s cnstrs s2
   | Continue | Break | Return _ | Throw | Assert _ | Assembly _ | PlaceHolder -> false
+  | Unchecked (slst,_) -> List.exists (has_cnstr_calls_s cnstrs) slst
 
 let has_cnstr_calls_f : func list -> func -> bool 
 = fun cnstrs f ->
@@ -798,57 +800,13 @@ let has_cnstr_calls_p p =
   List.exists (has_cnstr_calls_c cnstrs) p
 let has_cnstr_calls p = has_cnstr_calls_p p
 
-let bind_params : int -> param list -> exp list -> stmt
+let bind_params : loc -> param list -> exp list -> stmt
 = fun loc params args ->
   try
     List.fold_left2 (fun acc (x,xinfo) arg -> 
-      Seq (acc, Assign (Var (x,xinfo), arg, loc)) 
+      Seq (acc, Assign (Var (x,xinfo), arg, loc))
     ) Skip params args
   with Invalid_argument _ -> Skip
-
-(* postprocess recursive constructor calls from outer contracts *)
-let rec post_cbody : id * exp list -> func list -> stmt -> stmt
-= fun (f,args) cnstrs (cbody as stmt) ->
-  match stmt with
-  | Assign _ | Decl _ -> stmt
-  | Seq (s1,s2) -> Seq (post_cbody (f,args) cnstrs s1, post_cbody (f,args) cnstrs s2)
-  | Call (None,Lv (Var (f',_)),args',_,_,loc,_) when BatString.equal f f' ->
-    if List.length args=0 && List.length args'>0 then
-      let lst = List.filter (fun c -> BatString.equal f (get_fname c)) cnstrs in
-      let _ = assert (List.length lst = 1) in
-      let cnstr = List.hd lst in
-      bind_params loc (get_params cnstr) args'
-    else if List.length args>0 && List.length args'>0 then
-      Skip (* argument values are already set; valid for 0.4.26 but invalid for 0.5.12 *)
-    else raise (Failure "post_cbody")
-  | Call _ -> stmt
-  | Skip | Assume _ -> stmt
-  | While (e,s) -> While (e, post_cbody (f,args) cnstrs s)
-  | If (e,s1,s2) -> If (e, post_cbody (f,args) cnstrs s1, post_cbody (f,args) cnstrs s2)
-  | Continue | Break | Return _ | Throw | Assert _ | Assembly _ | PlaceHolder -> stmt
-
-let rec inline_cnstr_calls_s : id -> func list -> stmt -> stmt
-= fun cname cnstrs stmt -> (* cname: contract name that contains statements *)
-  match stmt with
-  | Assign _ -> stmt
-  | Seq (s1,s2) -> Seq (inline_cnstr_calls_s cname cnstrs s1, inline_cnstr_calls_s cname cnstrs s2)
-  | Decl _ -> stmt
-  | Call (None,Lv (Var (f,_)),_,_,_,loc,_) when BatString.equal cname f ->
-    Skip (* recursive constructor calls from an enclosing contract have no side effects. *)
-  | Call (None,Lv (Var (f,_)),args,_,_,loc,_) when List.mem f (List.map get_fname cnstrs) ->
-    let lst = List.filter (fun c -> BatString.equal f (get_fname c)) cnstrs in
-    let _ = assert (List.length lst = 1) in
-    let cnstr = List.hd lst in
-    let binding = bind_params loc (get_params cnstr) args in
-    let cbody = get_body cnstr in
-    let cbody = post_cbody (f,args) cnstrs cbody in
-    Seq (binding, cbody)
-  | Call _ -> stmt
-  | Skip -> stmt
-  | Assume _ -> stmt
-  | While (e,s) -> While (e, inline_cnstr_calls_s cname cnstrs s)
-  | If (e,s1,s2) -> If (e, inline_cnstr_calls_s cname cnstrs s1, inline_cnstr_calls_s cname cnstrs s2)
-  | Continue | Break | Return _ | Throw | Assert _ | Assembly _ | PlaceHolder -> stmt
 
 let rec replace_ph : stmt -> stmt -> stmt
 = fun mod_body body ->
@@ -856,7 +814,7 @@ let rec replace_ph : stmt -> stmt -> stmt
   | PlaceHolder -> body
   | Seq (s1,s2) -> Seq (replace_ph s1 body, replace_ph s2 body)
   | While (e,s) -> While (e, replace_ph s body)
-  | If(e,s1,s2) -> If (e, replace_ph s1 body, replace_ph s2 body)
+  | If(e,s1,s2,i) -> If (e, replace_ph s1 body, replace_ph s2 body, i)
   | _ -> mod_body
 
 let inline_mod_calls_f : func list -> func -> func
@@ -866,7 +824,7 @@ let inline_mod_calls_f : func list -> func -> func
   let body' =
     List.fold_left (fun acc m ->
       let mod_def = List.find (fun f -> get_fname f = triple_fst m) funcs in
-      let binding = bind_params (-1) (get_params mod_def) (triple_snd m) in
+      let binding = bind_params (triple_third m) (get_params mod_def) (triple_snd m) in
       let mod_body = get_body mod_def in
       Seq (binding, replace_ph mod_body acc)
     ) body mods
@@ -884,7 +842,7 @@ let inline_cnstr_calls_f : func list -> func -> func
     let body' =
       List.fold_left (fun acc m ->
         let cnstr = List.find (fun f -> get_fname f = triple_fst m) cnstrs in
-        let binding = bind_params (-1) (get_params cnstr) (triple_snd m) in
+        let binding = bind_params (triple_third m) (get_params cnstr) (triple_snd m) in
         let cbody = get_body cnstr in
         Seq (Seq (binding, cbody), acc)
       ) body mods
@@ -951,9 +909,9 @@ let newid() = id:= !id+1; !id
 let add_ret_s f s =
   try
     let lv = params_to_lv (get_ret_params f) in
-    Seq (s, Return (Some (Lv lv), newid()))
+    Seq (s, Return (Some (Lv lv), dummy_loc))
   with
-    NoParameters -> Seq (s, Return (None, newid()))
+    NoParameters -> Seq (s, Return (None, dummy_loc))
 
 let add_ret_f f = update_body (add_ret_s f (get_body f)) f
 let add_ret_c c = update_funcs (List.map (add_ret_f) (get_funcs c)) c
@@ -1011,9 +969,9 @@ and rename_e enums exp =
   | UnOp (uop,e,typ) -> UnOp (uop, rename_e enums e, typ)
   | True | False | ETypeName _ -> exp
   | IncTemp _ | DecTemp _ -> failwith "rename_e enums1"
-  | CallTemp (_,_,_,_,einfo) -> failwith ("rename_e enums2: " ^ to_string_exp exp ^ "@" ^ string_of_int einfo.eloc)
-  | CondTemp (_,_,_,_,loc) -> failwith ("rename_e enums3: " ^ to_string_exp exp ^ "@" ^ string_of_int loc)
-  | AssignTemp (_,_,loc) -> failwith ("rename_e enums4: " ^ to_string_exp exp ^ "@" ^ string_of_int loc)
+  | CallTemp (_,_,_,_,einfo) -> failwith ("rename_e enums2: " ^ to_string_exp exp ^ "@" ^ string_of_int einfo.eloc.line)
+  | CondTemp (_,_,_,_,loc) -> failwith ("rename_e enums3: " ^ to_string_exp exp ^ "@" ^ string_of_int loc.line)
+  | AssignTemp (_,_,loc) -> failwith ("rename_e enums4: " ^ to_string_exp exp ^ "@" ^ string_of_int loc.line)
 
 let rec rename_s cnames enums stmt =
   match stmt with
@@ -1043,7 +1001,7 @@ let rec rename_s cnames enums stmt =
     let gasop' = match gasop with None -> gasop | Some e -> Some (rename_e enums e) in
     Call (lvop', e', exps', ethop', gasop', loc, site)
   | Skip -> Skip
-  | If (e,s1,s2) -> If (rename_e enums e, rename_s cnames enums s1, rename_s cnames enums s2)
+  | If (e,s1,s2,i) -> If (rename_e enums e, rename_s cnames enums s1, rename_s cnames enums s2, i)
   | While (e,s) -> While (rename_e enums e, rename_s cnames enums s)
   | Break | Continue | Return (None,_) -> stmt
   | Return (Some e,loc) -> Return (Some (rename_e enums e), loc)
@@ -1053,6 +1011,9 @@ let rec rename_s cnames enums stmt =
   | Assembly (lst,loc) ->
     Assembly (List.map (fun (x,refid) -> (x ^ separator ^ string_of_int refid, refid)) lst, loc)
   | PlaceHolder -> PlaceHolder
+  | Unchecked (slst,loc) ->
+    let slst' = List.map (rename_s cnames enums) slst in
+    Unchecked (slst',loc)
 
 let rename_param (id,vinfo) =
   if BatString.starts_with id Translator.param_name then (id,vinfo)
@@ -1116,7 +1077,7 @@ let rec tuple_s stmt =
       | Some _ -> assert false
     ) Skip eops
   | Seq (s1,s2) -> Seq (tuple_s s1, tuple_s s2) 
-  | If (e,s1,s2) -> If (e, tuple_s s1, tuple_s s2)
+  | If (e,s1,s2,i) -> If (e, tuple_s s1, tuple_s s2, i)
   | While (e,s) -> While (e, tuple_s s)
   | _ -> stmt
 
@@ -1182,48 +1143,72 @@ and cast_s stmt =
     let gasop' = match gasop with Some e -> Some (cast_e e) | None -> None in
     Call (lvop', e', elst', ethop', gasop', loc, site)
   | Skip -> stmt
-  | If (e1,s1,s2) -> If (cast_e e1, cast_s s1, cast_s s2) 
+  | If (e1,s1,s2,i) -> If (cast_e e1, cast_s s1, cast_s s2, i)
   | While (e,s) -> While (cast_e e, cast_s s)
   | Break | Continue -> stmt
   | Return _ | Throw -> stmt
   | Assume (e,loc) -> Assume (cast_e e, loc) 
   | Assert (e,vtyp,loc) -> Assert (cast_e e, vtyp, loc)
   | Assembly _ | PlaceHolder -> stmt
+  | Unchecked (slst,loc) -> Unchecked (List.map cast_s slst, loc)
 
 let cast_f f = update_body (cast_s (get_body f)) f
 let cast_c c = update_funcs (List.map cast_f (get_funcs c)) c
 
 let cast pgm = List.map cast_c pgm
 
-(******************************************************************************)
-(**** Add assumptions after division (non-zero), array access (length > 0) ****)
-(******************************************************************************)
+(***************************************************************)
+(**** Add guards for arithmetic operations (solv >= 0.8.0), ****)
+(**** division (non-zero), array access (length > 0)        ****)
+(***************************************************************)
 
 (* Reference for division: https://github.com/Z3Prover/z3/issues/2843 *)
-let rec add_nz_e exp =
+let rec add_io_dz_e ?(mode="all") exp =
+  let _ = assert (mode = "all" || mode = "io" || mode = "dz") in
   match exp with
   | Int _ | Real _ | Str _ -> []
-  | Lv lv -> add_nz_lv lv
-  | Cast (_,e) -> add_nz_e e
-  | BinOp (Div,e1,e2,einfo) ->
-    (mk_neq e2 (Int BatBig_int.zero)) :: ((add_nz_e e1) @ (add_nz_e e2))
-  | BinOp (_,e1,e2,_) -> (add_nz_e e1) @ (add_nz_e e2)
-  | UnOp (_,e,_) -> add_nz_e e
+  | Lv lv -> add_io_dz_lv ~mode lv
+  | Cast (_,e) -> add_io_dz_e ~mode e
+
+  | BinOp (Add,e1,e2,einfo)
+    when BatString.starts_with !Options.solc_ver "0.8"
+         && (mode ="all" || mode = "io") ->
+    (mk_ge (mk_add e1 e2) e1, einfo.eloc) :: ((add_io_dz_e ~mode e1) @ (add_io_dz_e ~mode e2))
+
+  | BinOp (Sub,e1,e2,einfo)
+    when BatString.starts_with !Options.solc_ver "0.8"
+         && (mode ="all" || mode = "io") ->
+    (mk_ge e1 e2, einfo.eloc) :: ((add_io_dz_e ~mode e1) @ (add_io_dz_e ~mode e2))
+
+  | BinOp (Mul,e1,e2,einfo)
+    when BatString.starts_with !Options.solc_ver "0.8"
+         && (mode ="all" || mode = "io") ->
+    let zero = mk_eq e1 (Int BatBig_int.zero) in
+    let not_zero = mk_neq e1 (Int BatBig_int.zero) in
+    let mul_div = mk_div exp e1 in
+    (mk_or zero (mk_and not_zero (mk_eq mul_div e2)), einfo.eloc) :: ((add_io_dz_e ~mode e1) @ (add_io_dz_e ~mode e2))
+
+  | BinOp (Div,e1,e2,einfo) when (mode ="all" || mode = "dz") ->
+    (mk_neq e2 (Int BatBig_int.zero), einfo.eloc) :: ((add_io_dz_e ~mode e1) @ (add_io_dz_e ~mode e2))
+
+  | BinOp (_,e1,e2,_) -> (add_io_dz_e ~mode e1) @ (add_io_dz_e ~mode e2)
+  | UnOp (_,e,_) -> add_io_dz_e ~mode e
   | True | False | ETypeName _ -> []
   | IncTemp _ | DecTemp _ | CallTemp _
-  | CondTemp _ | AssignTemp _ -> failwith "add_nz_e"
+  | CondTemp _ | AssignTemp _ -> failwith "add_io_dz_e"
 
-and add_nz_lv lv =
+and add_io_dz_lv ?(mode="all") lv =
+  let _ = assert (mode = "all" || mode = "io" || mode = "dz") in
   match lv with
   | Var _ -> []
-  | MemberAccess (e,_,_,_) -> add_nz_e e
-  | IndexAccess (e,None,t) -> add_nz_e e
-  | IndexAccess (e1,Some e2,t) -> (add_nz_e e1) @ (add_nz_e e2)
+  | MemberAccess (e,_,_,_) -> add_io_dz_e ~mode e
+  | IndexAccess (e,None,t) -> add_io_dz_e ~mode e
+  | IndexAccess (e1,Some e2,t) -> (add_io_dz_e ~mode e1) @ (add_io_dz_e ~mode e2)
   | Tuple (eops,_) ->
     List.fold_left (fun acc eop ->
       match eop with
       | None -> acc
-      | Some e -> acc @ (add_nz_e e)
+      | Some e -> acc @ (add_io_dz_e ~mode e)
     ) [] eops
 
 (* vaa: valid array access  *)
@@ -1246,7 +1231,8 @@ and add_vaa_lv lv =
   | IndexAccess (e,None,t) -> add_vaa_e e
   | IndexAccess (e1,Some e2,t) ->
     if is_array (get_type_exp e1) then
-      (mk_gt (mk_member_access e1 ("length", EType (UInt 256))) e2)::((add_vaa_e e1) @ (add_vaa_e e2))
+      ((mk_gt (mk_member_access e1 ("length", EType (UInt 256))) e2), dummy_loc)
+      ::((add_vaa_e e1) @ (add_vaa_e e2))
     else
       (add_vaa_e e1) @ (add_vaa_e e2)
   | Tuple (eops,_) ->
@@ -1256,44 +1242,107 @@ and add_vaa_lv lv =
       | Some e -> acc @ (add_vaa_e e)
     ) [] eops
 
-let rec add_assume_s stmt =
+let rec add_assert stmt =
+  let mode = "io" in
+  let vultyp = "io" in
   match stmt with
   | Assign (lv,e,loc) ->
-    let lst = (add_nz_lv lv) @ (add_nz_e e) @ (add_vaa_lv lv) @ (add_vaa_e e)  in
-    List.fold_left (fun acc x -> Seq (acc, Assume (x, -1))) stmt lst
+    let lst = (add_io_dz_lv ~mode lv) @ (add_io_dz_e ~mode e) in
+    List.fold_left (fun acc (x,l) -> Seq (Assert (x, vultyp, l), acc)) stmt lst
   | Decl lv -> stmt
-  | Seq (s1,s2) -> Seq (add_assume_s s1, add_assume_s s2)
+  | Seq (s1,s2) -> Seq (add_assert s1, add_assert s2)
   | Call (lvop,e,args,ethop,gasop,loc,site) ->
-    let lvop_lst = match lvop with None -> [] | Some lv -> (add_nz_lv lv) @ (add_vaa_lv lv) in
-    let e_lst = (add_nz_e e) @ (add_vaa_e e) in
-    let args_lst = List.fold_left (fun acc e' -> acc @ (add_nz_e e') @ (add_vaa_e e')) [] args in
-    let ethop_lst = match ethop with None -> [] | Some e -> (add_nz_e e) @ (add_vaa_e e) in
-    let gasop_lst = match gasop with None -> [] | Some e -> (add_nz_e e) @ (add_vaa_e e) in
+    let lvop_lst = match lvop with None -> [] | Some lv -> (add_io_dz_lv ~mode lv) in
+    let e_lst = (add_io_dz_e ~mode e) in
+    let args_lst = List.fold_left (fun acc e' -> acc @ (add_io_dz_e ~mode e')) [] args in
+    let ethop_lst = match ethop with None -> [] | Some e -> (add_io_dz_e ~mode e) in
+    let gasop_lst = match gasop with None -> [] | Some e -> (add_io_dz_e ~mode e) in
     let lst = lvop_lst @ e_lst @ args_lst @ ethop_lst @ gasop_lst in
-    List.fold_left (fun acc x -> Seq (acc, Assume (x,-1))) stmt lst
+    List.fold_left (fun acc (x,l) -> Seq (Assert (x, vultyp, l), acc)) stmt lst
   | Skip -> stmt
-  | If (e,s1,s2) ->
-    let lst = (add_nz_e e) @ (add_vaa_e e) in
-    if List.length lst = 0 then stmt (* just for readability of IL *)
+
+  | If (e,s1,s2,i) ->
+    let lst = add_io_dz_e ~mode e in
+    if List.length lst = 0 then
+      If (e, add_assert s1, add_assert s2, i)
     else
-      let s' = List.fold_left (fun acc x -> Seq (acc, Assume (x,-1))) Skip lst in
-      If (e, Seq (s', add_assume_s s1), Seq (s', add_assume_s s2))
+      let s' = List.fold_left (fun acc (x,l) -> Seq (Assert (x, vultyp, l), acc)) Skip lst in
+      Seq (s', If (e, add_assert s1, add_assert s2, i))
+
   | While (e,s) ->
-    let lst = (add_nz_e e) @ (add_vaa_e e) in
-    if List.length lst = 0 then stmt (* just for readability of IL *)
+    let lst = add_io_dz_e ~mode e in
+    if List.length lst = 0 then
+      While (e, add_assert s)
     else
-      let s' = List.fold_left (fun acc x -> Seq (acc, Assume (x,-1))) Skip lst in
-      Seq (While (e, Seq (s', add_assume_s s)), s')
+      let s' = List.fold_left (fun acc (x,l) -> Seq (Assert (x, vultyp, l), acc)) Skip lst in
+      Seq (s', While (e, add_assert s))
+
+  | Break | Continue -> stmt
+  | Return (None,_) -> stmt
+  | Return (Some e,_) ->
+    let lst = add_io_dz_e ~mode e in
+    List.fold_left (fun acc (x,l) -> Seq (Assert (x, vultyp, l), acc)) stmt lst
+  | Throw -> stmt
+  | Assume (e,loc) ->
+    let lst = add_io_dz_e ~mode e in
+    List.fold_left (fun acc (x,l) -> Seq (Assert (x, vultyp, l), acc)) stmt lst
+  | Assert (e,"default",loc) ->
+    let lst = add_io_dz_e ~mode e in
+    List.fold_left (fun acc (x,l) -> Seq (Assert (x, vultyp, l), acc)) stmt lst
+  | Assert (e,_,loc) -> stmt (* automatically inserted assertion *)
+  | Assembly _ | PlaceHolder -> stmt
+  | Unchecked (slst,loc) -> assert false
+
+let rec add_assume_s ?(mode="all") stmt =
+  let _ = assert (mode = "all" || mode = "io" || mode = "dz") in
+  match stmt with
+  | Assign (lv,e,loc) ->
+    let lst = (add_io_dz_lv ~mode lv) @ (add_io_dz_e ~mode e) @ (add_vaa_lv lv) @ (add_vaa_e e) in
+    List.fold_left (fun acc (x,_) -> Seq (acc, Assume (x, dummy_loc))) stmt lst
+  | Decl lv -> stmt
+  | Seq (s1,s2) -> Seq (add_assume_s ~mode s1, add_assume_s ~mode s2)
+  | Call (lvop,e,args,ethop,gasop,loc,site) ->
+    let lvop_lst = match lvop with None -> [] | Some lv -> (add_io_dz_lv ~mode lv) @ (add_vaa_lv lv) in
+    let e_lst = (add_io_dz_e ~mode e) @ (add_vaa_e e) in
+    let args_lst = List.fold_left (fun acc e' -> acc @ (add_io_dz_e ~mode e') @ (add_vaa_e e')) [] args in
+    let ethop_lst = match ethop with None -> [] | Some e -> (add_io_dz_e ~mode e) @ (add_vaa_e e) in
+    let gasop_lst = match gasop with None -> [] | Some e -> (add_io_dz_e ~mode e) @ (add_vaa_e e) in
+    let lst = lvop_lst @ e_lst @ args_lst @ ethop_lst @ gasop_lst in
+    List.fold_left (fun acc (x,_) -> Seq (acc, Assume (x, dummy_loc))) stmt lst
+  | Skip -> stmt
+
+  | If (e,s1,s2,i) ->
+    let lst = (add_io_dz_e ~mode e) @ (add_vaa_e e) in
+    if List.length lst = 0 then (* just for readability of IL *)
+      If (e, add_assume_s ~mode s1, add_assume_s ~mode s2, i)
+    else
+      let s' = List.fold_left (fun acc (x,_) -> Seq (acc, Assume (x, dummy_loc))) Skip lst in
+      If (e, Seq (s', add_assume_s ~mode s1), Seq (s', add_assume_s ~mode s2), i)
+
+  | While (e,s) ->
+    let lst = (add_io_dz_e ~mode e) @ (add_vaa_e e) in
+    if List.length lst = 0 then (* just for readability of IL *)
+      While (e, add_assume_s ~mode s)
+    else
+      let s' = List.fold_left (fun acc (x,_) -> Seq (acc, Assume (x, dummy_loc))) Skip lst in
+      Seq (While (e, Seq (s', add_assume_s ~mode s)), s')
+
   | Break | Continue -> stmt
   | Return _ | Throw -> stmt
   | Assume (e,loc) ->
-    let lst = (add_nz_e e) @ (add_vaa_e e) in
-    List.fold_left (fun acc x -> Seq (acc, Assume (x, -1))) stmt lst
+    let lst = (add_io_dz_e ~mode e) @ (add_vaa_e e) in
+    List.fold_left (fun acc (x,_) -> Seq (acc, Assume (x, dummy_loc))) stmt lst
   | Assert (e,"default",loc) ->
-    let lst = (add_nz_e e) @ (add_vaa_e e) in
-    List.fold_left (fun acc x -> Seq (acc, Assume (x, -1))) stmt lst
+    let lst = (add_io_dz_e ~mode e) @ (add_vaa_e e) in
+    List.fold_left (fun acc (x,_) -> Seq (acc, Assume (x, dummy_loc))) stmt lst
   | Assert (e,_,loc) -> stmt (* automatically inserted assertion *)
   | Assembly _ | PlaceHolder -> stmt
+  | Unchecked (slst,loc) ->
+    let slst = List.map (add_assume_s ~mode:"dz") slst in
+    let slst = List.map add_assert slst in
+    List.fold_left (fun acc s ->
+      if is_skip acc then s else Seq (acc,s)
+    ) Skip slst
 
 let add_assume_f f = update_body (add_assume_s (get_body f)) f
 let add_assume_c c = update_funcs (List.map add_assume_f (get_funcs c)) c
@@ -1303,8 +1352,6 @@ let add_assume pgm = List.map add_assume_c pgm
 (**** Desugar struct_init ****)
 (*****************************)
 
-(* NOTE: # of 'members' & 'member_values' can be different, when there exist mapping-typed members *)
-(* NOTE: Therefore, implemented a customized fold_left2 function. *)
 let rec fold_left2 lv loc acc members values =
   match members, values with
   | [], [] -> acc
@@ -1347,11 +1394,16 @@ let rec dsg cname smap stmt =
     fold_left2 lv loc Skip members member_values
   | Call _ -> stmt
   | Skip -> stmt
-  | If (e,s1,s2) -> If (e, dsg cname smap s1, dsg cname smap s2)
+  | If (e,s1,s2,i) -> If (e, dsg cname smap s1, dsg cname smap s2, i)
   | While (e,s) -> While (e, dsg cname smap s)
   | Break | Continue -> stmt
   | Return _ | Throw -> stmt
   | Assume _ | Assert _ | Assembly _ | PlaceHolder -> stmt
+  | Unchecked (lst,loc) ->
+    let lst' = List.map (dsg cname smap) lst in
+    List.fold_left (fun acc s ->
+      if is_skip acc then s else Seq (acc,s)
+    ) Skip lst'
 
 let desugar_struct_f cname smap f = update_body (dsg cname smap (get_body f)) f
 

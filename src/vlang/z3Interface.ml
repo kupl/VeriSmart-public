@@ -37,10 +37,6 @@ and etyp_to_sort : elem_typ -> Z3.Sort.sort
     let domain_bit = if !Options.bit > 0 then !Options.bit else 256 in
     Z3.Z3Array.mk_sort !ctx (Z3.BitVector.mk_sort !ctx domain_bit) (Z3.BitVector.mk_sort !ctx 8)
 
-(* NOTE: Convert an expression to match a given target type. *)
-(* NOTE: this function is independent of 'common_typ' function,
- * NOTE: which involves implicit type conversion only.
- * NOTE: In contrast, this function considers explicit type conversion, too. *)
 let rec convert : typ -> typ -> Z3.Expr.expr -> Z3.Expr.expr
 = fun my_typ comp_typ z3exp ->
   if my_typ = comp_typ then z3exp
@@ -124,7 +120,7 @@ let rec vformula_to_z3exp : vformula -> Z3.Expr.expr
      | VGt  -> Z3.BitVector.mk_ugt !ctx z3exp1 z3exp2
      | VEq  -> Z3.Boolean.mk_eq !ctx z3exp1 z3exp2)
   | Imply (f1,f2) -> Z3.Boolean.mk_implies !ctx (vformula_to_z3exp f1) (vformula_to_z3exp f2)
-  | SigmaEqual _ | NoOverFlow _ -> failwith ("z3interface: " ^ to_string_vformula vf)
+  | SigmaEqual _ | NoOverFlow _ | UntrustSum _ | UntrustSum2 _ -> failwith ("z3interface: " ^ to_string_vformula vf)
   | ForAll (vars,f) ->
     let bound_vars = List.map (fun (x,t) -> vexp_to_z3exp (VVar (x,t))) vars in
     let body = vformula_to_z3exp f in
@@ -136,15 +132,15 @@ and vexp_to_z3exp : vexp -> Z3.Expr.expr
   match vexp with
   | VInt n -> Z3.Arithmetic.Integer.mk_numeral_s !ctx (BatBig_int.to_string n)
   | VVar (vid,typ) -> Z3.Expr.mk_const_s !ctx vid (typ_to_sort typ)
-  | Read (ve1,ve2,typ) when is_bytes (get_type_vexp ve1) ->
+  | Read (ve1,ve2) when is_bytes (get_typ_vexp ve1) ->
     let z3exp1 = vexp_to_z3exp ve1 in
-    let size = get_bytes_size (get_type_vexp ve1) in
+    let size = get_bytes_size (get_typ_vexp ve1) in
     (match ve2 with
      | VInt n ->
        let i = BatBig_int.to_int n in
        Z3.BitVector.mk_extract !ctx (size*8 - i*8 - 1) (size*8 - i*8 - 8) z3exp1
-     | _ -> Z3.Expr.mk_fresh_const !ctx (freshvar ()) (typ_to_sort typ))
-  | Read (ve1,ve2,_) ->
+     | _ -> Z3.Expr.mk_fresh_const !ctx (freshvar ()) (typ_to_sort (get_typ_vexp vexp)))
+  | Read (ve1,ve2) ->
     let z3exp1 = vexp_to_z3exp ve1 in
     let z3exp2 = vexp_to_z3exp ve2 in
     Z3.Z3Array.mk_select !ctx z3exp1 z3exp2
@@ -175,13 +171,13 @@ and vexp_to_z3exp : vexp -> Z3.Expr.expr
      | VNeg -> Z3.BitVector.mk_neg !ctx z3exp
      | VBNot -> Z3.BitVector.mk_not !ctx z3exp)
   | VCast (typ,ve) ->
-    let ve_typ = get_type_vexp ve in
+    let ve_typ = get_typ_vexp ve in
     let ve' = convert ve_typ typ (vexp_to_z3exp ve) in
     ve'
   | VCond vf -> vformula_to_z3exp vf
   | Ite (ve1,ve2,ve3) -> Z3.Boolean.mk_ite !ctx (vexp_to_z3exp ve1) (vexp_to_z3exp ve2) (vexp_to_z3exp ve3)
   | Uninterp (fname,args,t) ->
-    let sorts = List.map (fun e -> e |> get_type_vexp |> typ_to_sort) args in
+    let sorts = List.map (fun e -> e |> get_typ_vexp |> typ_to_sort) args in
     let func = Z3.FuncDecl.mk_func_decl_s !ctx fname sorts (typ_to_sort t) in
     let z3args = List.map vexp_to_z3exp args in
     Z3.FuncDecl.apply func z3args
@@ -199,7 +195,7 @@ let rec fold_vf : vformula -> vformula
   | VBinRel (VEq, VInt n1, VInt n2) -> if BatBig_int.eq_big_int n1 n2 then VTrue else VFalse
   | VBinRel (rel,e1,e2) -> VBinRel (rel, fold_ve e1, fold_ve e2) 
   | Imply (f1,f2) -> Imply (fold_vf f1, fold_vf f2)
-  | SigmaEqual _ | NoOverFlow _ -> assert false
+  | SigmaEqual _ | NoOverFlow _ | UntrustSum _ | UntrustSum2 _ -> assert false
   | ForAll (vars,f) -> ForAll (vars, fold_vf f)
   | Label (l,f) -> Label (l, fold_vf f)
 
@@ -207,7 +203,7 @@ and fold_ve : vexp -> vexp
 = fun ve ->
   match ve with
   | VInt _ | VVar _ -> ve
-  | Read (e1,e2,t) -> Read (fold_ve e1, fold_ve e2, t)
+  | Read (e1,e2) -> Read (fold_ve e1, fold_ve e2)
   | Write (e1,e2,e3) -> Write (fold_ve e1, fold_ve e2, fold_ve e3)
   | VBinOp (VAdd,VInt n1,VInt n2,typ) -> VInt (BatBig_int.add n1 n2)
   | VBinOp (VSub,VInt n1,VInt n2,typ) -> VInt (BatBig_int.sub n1 n2)
@@ -227,13 +223,6 @@ and fold_ve : vexp -> vexp
   | Ite (e1,e2,e3) -> Ite (fold_ve e1, fold_ve e2, fold_ve e3)
   | Uninterp (fname,args,t) -> Uninterp (fname, List.map fold_ve args, t)
 
-(* NOTE: Reasons for performing constant folding:
- * NOTE:   1. Allow not to involve integer theory.
- * NOTE:   2. Allow simpler implementation, e.g., '+' semantics only concerns the theory of bitvectors.
- * NOTE: But in principle, constant folding is not mandatory.
- * NOTE: By involving integer theory and addinig addtional rules,
- * NOTE: operations over integer constants can be handled as it is. *)
-
 let rec constant_folding : vformula -> vformula
 = fun vf ->
   let vf' = fold_vf vf in 
@@ -242,7 +231,7 @@ let rec constant_folding : vformula -> vformula
 
 let common_typ : vexp -> vexp -> typ
 = fun e1 e2 ->
-  let t1,t2 = get_type_vexp e1, get_type_vexp e2 in
+  let t1,t2 = get_typ_vexp e1, get_typ_vexp e2 in
   if t1=t2 then t1
   else
    (match t1,t2 with
@@ -268,30 +257,30 @@ let rec cast_vf vf =
   | VAnd (f1,f2) -> VAnd (cast_vf f1, cast_vf f2)
   | VOr (f1,f2) -> VOr (cast_vf f1, cast_vf f2)
   | VBinRel (vbrel,e1,e2) ->
-    let t1,t2 = get_type_vexp e1, get_type_vexp e2 in
+    let t1,t2 = get_typ_vexp e1, get_typ_vexp e2 in
     let ctyp = common_typ e1 e2 in
     let e1' = if t1 = ctyp then cast_ve e1 else VCast (ctyp, cast_ve e1) in
     let e2' = if t2 = ctyp then cast_ve e2 else VCast (ctyp, cast_ve e2) in
     VBinRel (vbrel,e1',e2')
   | Imply (f1,f2) -> Imply (cast_vf f1, cast_vf f2) 
-  | SigmaEqual _ | NoOverFlow _ -> assert false
+  | SigmaEqual _ | NoOverFlow _ | UntrustSum _ | UntrustSum2 _  -> assert false
   | ForAll (vars,f) -> ForAll (vars, cast_vf f)
   | Label _ -> assert false
 
 and cast_ve ve =
   match ve with
   | VInt _ | VVar _ -> ve
-  | Read (e1,e2,typ) ->
-    let expected_idx_typ = domain_typ (get_type_vexp e1) in
-    let idx_typ = get_type_vexp e2 in
+  | Read (e1,e2) ->
+    let expected_idx_typ = domain_typ (get_typ_vexp e1) in
+    let idx_typ = get_typ_vexp e2 in
     let e1' = cast_ve e1 in
     let e2' = if expected_idx_typ = idx_typ then cast_ve e2 else VCast (expected_idx_typ, cast_ve e2) in
-    Read (e1',e2',typ)
+    Read (e1',e2')
   | Write (e1,e2,e3) ->
-    let expected_range_typ = range_typ (get_type_vexp e1) in
-    let range_typ = get_type_vexp e3 in
-    let expected_idx_typ = domain_typ (get_type_vexp e1) in
-    let idx_typ = get_type_vexp e2 in
+    let expected_range_typ = range_typ (get_typ_vexp e1) in
+    let range_typ = get_typ_vexp e3 in
+    let expected_idx_typ = domain_typ (get_typ_vexp e1) in
+    let idx_typ = get_typ_vexp e2 in
     let e1' = cast_ve e1 in
     let e2' = if expected_idx_typ = idx_typ then cast_ve e2 else VCast (expected_idx_typ, cast_ve e2) in
     let e3' = if expected_range_typ = range_typ then cast_ve e3 else VCast (expected_range_typ, cast_ve e3) in
@@ -300,8 +289,8 @@ and cast_ve ve =
   | VBinOp (vbop,e1,e2,t) when vbop=VShiftL || vbop=VShiftR ->
     (* Seperate from the below case, when common types cannot be computed in general. *)
     (* E.g., b << n where 'b': bytes32 and 'n': uint 256 *)
-    let t1 = get_type_vexp e1 in
-    let t2 = get_type_vexp e2 in
+    let t1 = get_typ_vexp e1 in
+    let t2 = get_typ_vexp e2 in
     (* Solidity doc says The right operand must be 'unsigned' types. *)
     (* However, 'n1 << n2' can be compiled with solc 0.6.3 (n1:uint, n2:int). *)
     (* For the right operand, 'positive' values seems enough. *)
@@ -315,8 +304,8 @@ and cast_ve ve =
     in
     VBinOp (vbop,e1',e2',t)
   | VBinOp (vbop,e1,e2,t) ->
-    let t1 = get_type_vexp e1 in
-    let t2 = get_type_vexp e2 in
+    let t1 = get_typ_vexp e1 in
+    let t2 = get_typ_vexp e2 in
     let ctyp = common_typ e1 e2 in
     let _ = assert (t = ctyp) in
     let e1' = if t1 = ctyp then cast_ve e1 else VCast (ctyp, cast_ve e1) in
@@ -373,6 +362,9 @@ let rec rest_vf : int -> vformula -> vformula
   | Imply (f1,f2) -> Imply (rest_vf bit f1, rest_vf bit f2)
   | SigmaEqual ((x,t),e) -> SigmaEqual ((x, change_typ bit t), rest_ve bit e)
   | NoOverFlow (x,t) -> NoOverFlow (x, change_typ bit t)
+  | UntrustSum ((x1,t1), (x2,t2)) -> UntrustSum ((x1, change_typ bit t1), (x2, change_typ bit t2))
+  | UntrustSum2 ((x1,t1),(x2,t2),(x3,t3)) ->
+    UntrustSum2 ((x1, change_typ bit t1), (x2, change_typ bit t2), (x3, change_typ bit t3))
   | ForAll (lst,f) ->
     let lst' = List.map (fun (x,t) -> (x,change_typ bit t)) lst in
     ForAll (lst', rest_vf bit f)
@@ -383,7 +375,7 @@ and rest_ve : int -> vexp -> vexp
   match ve with
   | VInt _ -> ve
   | VVar (x,t) -> VVar (x, change_typ bit t)
-  | Read (e1,e2,t) -> Read (rest_ve bit e1, rest_ve bit e2, change_typ bit t) 
+  | Read (e1,e2) -> Read (rest_ve bit e1, rest_ve bit e2)
   | Write (e1,e2,e3) -> Write (rest_ve bit e1, rest_ve bit e2, rest_ve bit e3)
   | VBinOp (bop,e1,e2,t) -> VBinOp (bop, rest_ve bit e1, rest_ve bit e2, change_typ bit t)
   | VUnOp (uop,e,t) -> VUnOp (uop, rest_ve bit e, change_typ bit t)

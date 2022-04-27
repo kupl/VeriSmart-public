@@ -35,6 +35,7 @@ type node = Node.t
 module G = Graph.Persistent.Digraph.Concrete (Node)
 
 let trans_node = Node.Node 0
+let extern_node = Node.Node (-1)
 
 (********************)
 (********************)
@@ -74,7 +75,7 @@ and stmt =
             exp option * exp option * (* ether, gas *)
             loc * int (* loc, call-site (AST id) *)
   | Skip
-  | If of exp * stmt * stmt
+  | If of exp * stmt * stmt * ifinfo
   | While of exp * stmt
   | Break
   | Continue
@@ -84,6 +85,7 @@ and stmt =
   | Assert of exp * vultyp * loc (* used to check safety conditions *)
   | Assembly of (id * int) list * loc
   | PlaceHolder (* _ *)
+  | Unchecked of stmt list * loc (* unchecked block *)
 
 and exp =
   | Int of BatBig_int.t
@@ -119,7 +121,14 @@ and lv =
   | Tuple of exp option list * typ (* [a, b, c, d, ] *)
 
 and id = string
-and loc = int 
+and line = int
+
+and loc = {
+  line : line;
+  finish_line : line;
+  offset : int; (* in byte *)
+  len : int     (* in byte *)
+}
 
 and cinfo = {
   numid : int;
@@ -131,14 +140,14 @@ and cinfo = {
 and vinfo = {
   vloc : loc;
   is_gvar : bool;
-  vtype : typ;
+  vtyp : typ;
   vvis : visibility;
   vid : int;
   refid : int; (* referenced declartion. valid only for non-function variables *)
   vscope : int; (* belonging contract numid (global) or func numid (local) *)
   storage : string;
   flag : bool; (* true if the information is propagated *)
-  org : string (* original name (source code) before renamed or replaced *)
+  org : exp option (* original expression (source code) before renamed or replaced *)
 }
 
 and einfo = {
@@ -147,7 +156,14 @@ and einfo = {
   eid : int
 }
 
+and ifinfo = {
+  if_loc : loc;
+  if_tloc : loc;
+  if_floc : loc option; (* None means no 'else' block exists in original code *)
+}
+
 and mod_call = id * exp list * loc
+and state_mutability = Payable | NonPayable | View | Pure
 
 and finfo = {
   is_constructor : bool;
@@ -155,9 +171,12 @@ and finfo = {
   is_modifier : bool;
   mod_list : mod_call list;
   mod_list2 : mod_call list; (* constructor modifier invocations *)
-  ret_param_loc : int; (* location where ret params are delclared *)
+  param_loc : loc; (* line of '(' and ')' *)
+  ret_param_loc : loc; (* location where ret params are delclared *)
   fvis : visibility;
+  mutability: state_mutability;
   fid : int;
+  floc : loc;
   scope : int;      (* belonging contract numid *)
   scope_s : id;     (* belonging contract name *)
   org_scope_s : id; (* original contract name in which functions are initially defined *)
@@ -165,15 +184,16 @@ and finfo = {
 }
 
 and cfg = {
-  graph         : G.t;
-  pre_set       : node BatSet.t; (* nodes just before loop headers *)
-  lh_set        : node BatSet.t; (* loop header set *)
-  lx_set        : node BatSet.t; (* loop exit set *)
-  continue_set  : node BatSet.t;
-  break_set     : node BatSet.t;
-  basic_paths   : node list BatSet.t;
-  stmt_map      : (node, stmt) BatMap.t;
-  signature     : fkey
+  graph          : G.t;
+  outpreds_of_lh : node BatSet.t; (* preds of loop headers outside of loops *)
+  lh_set         : node BatSet.t; (* loop header set *)
+  lx_set         : node BatSet.t; (* loop exit set *)
+  continue_set   : node BatSet.t;
+  break_set      : node BatSet.t;
+  extern_set     : node BatSet.t; (* nodes in external contexts. only valid in exploit mode *)
+  basic_paths    : node list BatSet.t;
+  stmt_map       : (node, stmt) BatMap.t;
+  signature      : fkey
 }
 
 and typ =
@@ -200,25 +220,31 @@ and elem_typ =
   | DBytes (* dynamically-sized byte arrays *) 
   (* | Fixed | UFixed *)
 
+let dummy_loc = { line = -1; finish_line = -1; offset = -1; len = -1 }
+
+let mk_loc ?(line=(-1)) ?(finish_line=(-1)) ?(offset=(-1)) ?(len=(-1)) () =
+  let finish_line = max line finish_line in
+  { line = line; finish_line = finish_line; offset = offset; len = len }
+
 let dummy_vinfo =
-  {vloc = -1; is_gvar = false; vtype = Void; vvis = Private; vid = -1; refid = -1; vscope = 1; storage = ""; flag = false; org = ""}
-let dummy_vinfo_with_typ typ =
-  {vloc = -1; is_gvar = false; vtype = typ; vvis = Private; vid = -1; refid = -1; vscope = -1; storage = ""; flag = false; org = ""}
-let dummy_vinfo_with_typ_org typ org =
-  {vloc = -1; is_gvar = false; vtype = typ; vvis = Private; vid = -1; refid = -1; vscope = -1; storage = ""; flag = false; org = org}
-let dummy_vinfo_typ_org_loc typ org loc =
-  {vloc = loc; is_gvar = false; vtype = typ; vvis = Private; vid = -1; refid = -1; vscope = -1; storage = ""; flag = false; org = org}
+  {vloc = dummy_loc; is_gvar = false; vtyp = Void; vvis = Private; vid = -1; refid = -1; vscope = 1; storage = ""; flag = false; org = None}
+
+let mk_vinfo ?(loc=dummy_loc) ?(typ=Void) ?(org=None) () =
+  {vloc = loc; is_gvar = false; vtyp = typ; vvis = Private; vid = -1; refid = -1; vscope = -1; storage = ""; flag = false; org = org}
+
+let dummy_ifinfo = { if_loc = dummy_loc; if_tloc = dummy_loc; if_floc = Some dummy_loc }
 
 let empty_cfg = {
-  graph         = G.empty;
-  pre_set       = BatSet.empty;
-  lh_set        = BatSet.empty;
-  lx_set        = BatSet.empty;
-  continue_set  = BatSet.empty;
-  break_set     = BatSet.empty;
-  basic_paths   = BatSet.empty;
-  stmt_map      = BatMap.empty;
-  signature     = ("Dummy","Dummy",[])
+  graph           = G.empty;
+  outpreds_of_lh  = BatSet.empty;
+  lh_set          = BatSet.empty;
+  lx_set          = BatSet.empty;
+  continue_set    = BatSet.empty;
+  break_set       = BatSet.empty;
+  extern_set      = BatSet.empty;
+  basic_paths     = BatSet.empty;
+  stmt_map        = BatMap.empty;
+  signature       = ("Dummy","Dummy",[])
 }
 
 let find_stmt : node -> cfg -> stmt
@@ -270,13 +296,13 @@ let get_cnames : pgm -> id list
 let get_gvars_c : contract -> var list
 = fun c ->
   let decls = get_decls c in
-  List.map (fun (x,_,vinfo) -> (x,vinfo.vtype)) decls
+  List.map (fun (x,_,vinfo) -> (x,vinfo.vtyp)) decls
 
 let get_gvars : pgm -> var list
 = fun p ->
   let main = get_main_contract p in
   let decls = get_decls main in
-  List.map (fun (x,_,vinfo) -> (x,vinfo.vtype)) decls
+  List.map (fun (x,_,vinfo) -> (x,vinfo.vtyp)) decls
 
 let get_cinfo : contract -> cinfo
 = fun (_,_,_,_,_,cinfo) -> cinfo
@@ -322,11 +348,18 @@ let update_structs : structure list -> contract -> contract
 let update_funcs : func list -> contract -> contract
 = fun funcs (cid,decls,structs,enums,_,cinfo) -> (cid,decls,structs,enums,funcs,cinfo)
 
+(* include itself *)
 let get_inherit_order : contract -> int list
-= fun (_,_,_,_,_,cinfo) -> cinfo.inherit_order (* self => most derived (parent) *)
+= fun (_,_,_,_,_,cinfo) -> cinfo.inherit_order (* itself => parents *)
 
-let is_library : contract -> bool
+let is_library_kind : contract -> bool
 = fun c -> BatString.equal (get_cinfo c).ckind "library"
+
+let is_interface_kind : contract -> bool
+= fun c -> BatString.equal (get_cinfo c).ckind "interface"
+
+let is_contract_kind : contract -> bool
+= fun c -> BatString.equal (get_cinfo c).ckind "contract"
 
 let get_finfo : func -> finfo
 = fun (_,_,_,_,finfo) -> finfo
@@ -334,7 +367,7 @@ let get_finfo : func -> finfo
 let get_mod_calls : func -> mod_call list
 = fun (_,_,_,_,finfo) -> finfo.mod_list
 
-let get_vis : func -> visibility 
+let get_vis : func -> visibility
 = fun f -> (get_finfo f).fvis
 
 let is_public = function 
@@ -360,6 +393,14 @@ let is_internal_func : func -> bool
 
 let is_private_func : func -> bool
 = fun f -> is_private (get_vis f)
+
+let get_mutability : func -> state_mutability
+= fun f -> (get_finfo f).mutability
+
+let is_view_pure_f : func -> bool
+= fun f ->
+  let mut = get_mutability f in
+  mut = View || mut = Pure
 
 let update_finfo : finfo -> func -> func
 = fun finfo (id,params,ret_params,stmt,_) -> (id,params,ret_params,stmt,finfo)
@@ -396,7 +437,7 @@ let update_cfg : func -> cfg -> func
   update_finfo {finfo with cfg = g} f
 
 let is_outer_pred_of_lh : node -> cfg -> bool
-= fun n g -> BatSet.mem n g.pre_set 
+= fun n g -> BatSet.mem n g.outpreds_of_lh
 
 let is_loophead : node -> cfg -> bool
 = fun n g -> BatSet.mem n g.lh_set
@@ -416,6 +457,38 @@ let is_callnode : node -> cfg -> bool
   | Call _ -> true
   | _ -> false
 
+let extcall = Call (None, Lv (Var ("@extern", dummy_vinfo)), [], None, None, dummy_loc, -1)
+
+let is_external_call : stmt -> bool
+= fun stmt ->
+  match stmt with
+  | Call (None, Lv (Var ("@extern", _)), args, None, None, _, _) -> true
+  | _ -> false
+
+let is_extern_log_stmt : stmt -> bool
+= fun stmt ->
+  match stmt with
+  | Call (_,Lv (Var ("@extern_log",_)),exps,_,_,_,_) -> true
+  | _ -> false
+
+let is_extern_log_node : node -> cfg -> bool
+= fun n g ->
+  match find_stmt n g with
+  | Call (_,Lv (Var ("@extern_log",_)),exps,_,_,_,_) -> true
+  | _ -> false
+
+let get_fname_extern_log_stmt : stmt -> string
+= fun stmt ->
+  match stmt with
+  | Call (_,Lv (Var ("@extern_log",_)),Lv (Var (fname,_))::args,_,_,_,_) -> fname
+  | _ -> assert false
+
+let get_fname_extern_log_node : node -> cfg -> string
+= fun n g ->
+  match find_stmt n g with
+  | Call (_,Lv (Var ("@extern_log",_)),Lv (Var (fname,_))::args,_,_,_,_) -> fname
+  | _ -> assert false
+
 let is_skip_node : node -> cfg -> bool
 = fun n g ->
   match find_stmt n g with
@@ -427,6 +500,12 @@ let is_exception_node : node -> cfg -> bool
   match find_stmt n g with
   | Throw -> true
   | Call (lvop, Lv (Var ("revert",_)),args,_,_,_,_) -> true
+  | _ -> false
+
+let is_assign_node : node -> cfg -> bool
+= fun n g ->
+  match find_stmt n g with
+  | Assign _ -> true
   | _ -> false
 
 let is_entry : node -> bool
@@ -462,6 +541,12 @@ let is_mapping : typ -> bool
 = fun t ->
   match t with
   | Mapping _ -> true
+  | _ -> false
+
+let is_mapping2 : typ -> bool
+= fun t ->
+  match t with
+  | Mapping2 _ -> true
   | _ -> false
 
 let is_usual_mapping : typ -> bool
@@ -602,6 +687,7 @@ let range_typ : typ -> typ
   | Mapping (_,t) -> t
   | Mapping2 (_,t) -> t
   | EType DBytes -> EType (Bytes 1)
+  | EType (Bytes _) -> EType (Bytes 1)
   | _ -> failwith "range_typ"
 
 let tuple_elem_typs : typ -> typ list
@@ -634,12 +720,12 @@ let get_type_var : var -> typ
 = fun var -> snd var
 
 let get_type_var2 : id * vinfo -> typ
-= fun (v,vinfo) -> vinfo.vtype
+= fun (v,vinfo) -> vinfo.vtyp
 
 let get_type_lv : lv -> typ
 = fun lv ->
   match lv with
-  | Var (_,vinfo) -> vinfo.vtype
+  | Var (_,vinfo) -> vinfo.vtyp
   | MemberAccess (_,_,_,typ) -> typ 
   | IndexAccess (_,_,typ) -> typ 
   | Tuple (_, typ) -> typ
@@ -714,9 +800,10 @@ let is_skip stmt =
 
 let get_body (_,_,_,stmt,_) = stmt
 let get_params (_,params,_,_,_) = params
-let get_param_types (_,params,_,_,_) = List.map (fun p -> (snd p).vtype) params 
+let get_param_vars (_,params,_,_,_) = List.map (fun (v,vinfo)-> (v,vinfo.vtyp)) params
+let get_param_types (_,params,_,_,_) = List.map (fun p -> (snd p).vtyp) params
 let get_ret_params (_,_,ret_params,_,_) = ret_params
-let get_ret_param_types (_,_,ret_params,_,_) = List.map (fun p -> (snd p).vtype) ret_params 
+let get_ret_param_types (_,_,ret_params,_,_) = List.map (fun p -> (snd p).vtyp) ret_params 
 let get_fname (id,_,_,_,_) = id
 
 let get_fsig : func -> id * typ list
@@ -733,7 +820,7 @@ let get_fkey : func -> id * id * typ list
 
 let get_func_decl : func -> func_decl 
 = fun (fname,params,ret_params,_,_) ->
-  (fname, List.map (fun (x,xinfo) -> (x,xinfo.vtype)) params, List.map (fun (x,xinfo) -> (x,xinfo.vtype)) ret_params)
+  (fname, List.map (fun (x,xinfo) -> (x,xinfo.vtyp)) params, List.map (fun (x,xinfo) -> (x,xinfo.vtyp)) ret_params)
 
 let get_all_fkeys_c : contract -> fkey BatSet.t
 = fun c ->
@@ -756,7 +843,9 @@ let rec to_string_exp ?(report=false) exp =
   match exp with
   | Int n -> BatBig_int.to_string n
   | Real n -> string_of_float n
-  | Str s -> "\"" ^ (BatString.nreplace s "\n" "") ^ "\""
+  | Str s ->
+    if !Options.cfg then "\\\"" ^ (BatString.nreplace s "\n" "") ^ "\\\""
+    else "\"" ^ (BatString.nreplace s "\n" "") ^ "\""
   | Lv lv -> to_string_lv ~report lv
   | Cast (typ,e) -> to_string_typ typ ^ "(" ^ to_string_exp ~report e ^ ")"
   | BinOp (bop,e1,e2,_) -> "(" ^ to_string_exp ~report e1 ^ " " ^ to_string_bop bop ^ " " ^ to_string_exp ~report e2 ^ ")"
@@ -774,9 +863,9 @@ let rec to_string_exp ?(report=false) exp =
     (match gasop with None -> "" | Some e -> ".gas(" ^ to_string_exp ~report e ^ ")") ^
     string_of_list ~first:"(" ~last:")" ~sep:", " (to_string_exp ~report) args
 
-and to_string_exp_opt exp =
+and to_string_exp_opt ?(report=false) exp =
   match exp with
-  | Some e -> to_string_exp e
+  | Some e -> to_string_exp ~report e
   | None -> " "
 
 and to_string_bop bop =
@@ -802,13 +891,18 @@ and to_string_uop uop =
 and to_string_lv ?(report=false) lv =
   match lv with
   | Var (x,xinfo) ->
-    if not report then x else xinfo.org
-  | MemberAccess (e,x,xinfo,_) -> to_string_exp ~report e ^ "." ^ (if not report then x else xinfo.org)
+    if not report then x else to_string_vinfo_org ~report x xinfo.org
+  | MemberAccess (e,x,xinfo,_) -> to_string_exp ~report e ^ "." ^ (if not report then x else to_string_vinfo_org ~report x xinfo.org)
   | IndexAccess (e,None,_) -> to_string_exp ~report e ^ "[]"
   | IndexAccess (e1,Some e2,_) -> to_string_exp ~report e1 ^ "[" ^ to_string_exp ~report e2 ^ "]"
-  | Tuple (elst, t) -> 
-    if is_array t then string_of_list ~first:"[" ~last:"]" ~sep:", " to_string_exp_opt elst
-    else string_of_list ~first:"(" ~last:")" ~sep:", " to_string_exp_opt elst
+  | Tuple (elst, t) ->
+    if is_array t then string_of_list ~first:"[" ~last:"]" ~sep:", " (to_string_exp_opt ~report) elst
+    else string_of_list ~first:"(" ~last:")" ~sep:", " (to_string_exp_opt ~report) elst
+
+and to_string_vinfo_org ?(report=false) x org =
+  match org with
+  | None -> x
+  | Some e -> to_string_exp ~report e
 
 and to_string_typ typ =
   match typ with
@@ -816,8 +910,8 @@ and to_string_typ typ =
   | ConstReal -> "rational_const"
   | ConstString -> "literal_string"
   | EType etyp -> to_string_etyp etyp
-  | Mapping (etyp,typ) -> "mapping" ^ "(" ^ to_string_etyp etyp ^ "=>" ^ to_string_typ typ ^ ")"
-  | Mapping2 (t1,t2) -> "mapping2" ^ "(" ^ to_string_typ t1 ^ "=>" ^ to_string_typ t2 ^ ")"
+  | Mapping (etyp,typ) -> "mapping" ^ "(" ^ to_string_etyp etyp ^ " => " ^ to_string_typ typ ^ ")"
+  | Mapping2 (t1,t2) -> "mapping2" ^ "(" ^ to_string_typ t1 ^ " => " ^ to_string_typ t2 ^ ")"
   | Array (typ,None) -> to_string_typ typ ^ "[]"
   | Array (typ,Some n) -> to_string_typ typ ^ "[" ^ string_of_int n ^ "]"
   | Void -> "void"
@@ -853,7 +947,6 @@ let rec to_string_stmt ?(report=false) stmt =
     string_of_list ~first:"(" ~last:")" ~sep:", " (to_string_exp ~report) exps ^ ";"
 
   | Call (Some lv, e, exps, ethop, gasop, _, _) ->
-    (* NOTE: refer to 'replace_tmpexp_e' in preprocess.ml *)
     if report && BatString.starts_with (to_string_lv lv) "Tmp" then
       to_string_lv ~report lv
     else
@@ -863,7 +956,7 @@ let rec to_string_stmt ?(report=false) stmt =
       string_of_list ~first:"(" ~last:")" ~sep:", " (to_string_exp ~report) exps ^ ";"
 
   | Skip -> "skip;"
-  | If (e,s1,s2) ->
+  | If (e,s1,s2,_) ->
     "if" ^ "(" ^ to_string_exp ~report e ^ ")" ^ "{" ^ to_string_stmt ~report s1 ^ "}" ^ " " ^
     "else" ^ "{" ^ to_string_stmt ~report s2 ^ "}" 
   | While (e,s) -> "while" ^ "(" ^ to_string_exp ~report e ^ ")" ^ "{" ^ to_string_stmt ~report s ^ "}"
@@ -877,16 +970,24 @@ let rec to_string_stmt ?(report=false) stmt =
   | Assembly (lst,_) ->
     "assembly" ^ string_of_list ~first:"{" ~last:"}" ~sep:", " (fst|>id) lst ^ ";"
   | PlaceHolder -> "_;"
+  | Unchecked (lst,_) ->
+    "unchecked {" ^ "\n" ^
+     (List.fold_left (fun acc s ->
+      if acc = "" then "    " ^ to_string_stmt ~report s
+      else
+        acc ^ "\n" ^ "    " ^ to_string_stmt ~report s
+      ) "" lst) ^ "\n" ^ "}"
 
 let rec to_string_func (id,params,ret_params,stmt,finfo) =
   "function" ^ " " ^ id ^ " " ^ to_string_params params ^
   (if List.length finfo.mod_list2 > 0 then " " ^ to_string_mods finfo.mod_list2 else "") ^
   (if List.length finfo.mod_list > 0 then " " ^ to_string_mods finfo.mod_list else "") ^
   " " ^ "returns" ^ " " ^ to_string_params ret_params ^
-  " " ^ to_string_vis finfo.fvis ^ " " ^ "{" ^ "\n" ^
+  " " ^ to_string_vis finfo.fvis ^
+  " " ^ (if finfo.is_payable then "payable" else "") ^ " " ^ "{" ^ "\n" ^
   "    " ^ to_string_stmt stmt ^ "\n" ^ "  " ^ "}" ^ "\n"
  
-and to_string_param (id,vinfo) = to_string_typ vinfo.vtype ^ " " ^ id
+and to_string_param (id,vinfo) = to_string_typ vinfo.vtyp ^ " " ^ id
 and to_string_params params = string_of_list ~first:"(" ~last:")" ~sep:", " to_string_param params
 
 and to_string_exps exps = string_of_list ~first:"(" ~last:")" ~sep:", " to_string_exp exps
@@ -902,8 +1003,8 @@ and to_string_vis vis =
 
 let to_string_state_var_decl decl =
   match decl with
-  | (id,None,vinfo) -> to_string_typ vinfo.vtype ^ " " ^ id ^ ";"
-  | (id,Some e,vinfo) -> to_string_typ vinfo.vtype ^ " " ^ id ^ " = " ^ to_string_exp e ^ ";" 
+  | (id,None,vinfo) -> to_string_typ vinfo.vtyp ^ " " ^ id ^ ";"
+  | (id,Some e,vinfo) -> to_string_typ vinfo.vtyp ^ " " ^ id ^ " = " ^ to_string_exp e ^ ";" 
 
 let to_string_var_decl = to_string_param
 
@@ -933,6 +1034,9 @@ let to_string_fsig (fname,typs) =
 
 let to_string_fkey (cname,fname,typs) =
   "(" ^ cname ^ ", " ^ fname ^ ", " ^ (string_of_list ~first:"[" ~last:"]" ~sep:", " to_string_typ typs) ^ ")"
+
+let to_string_fkey2 (cname,fname,typs) =
+  "(" ^ cname ^ "/" ^ fname ^ "/" ^ (string_of_list ~first:"[" ~last:"]" ~sep:"_" to_string_typ typs) ^ ")"
 
 let to_string_cfg ?(name="G") : cfg -> string
 = fun cfg ->
@@ -1040,7 +1144,7 @@ let params_to_lv params =
     Var (x,vinfo) else 
   if (List.length params > 1) then
     let eops = List.map (fun (x,vinfo) -> Some (Lv (Var (x,vinfo)))) params in
-    let tuple_typ = TupleType (List.map (fun (_,vinfo) -> vinfo.vtype) params) in
+    let tuple_typ = TupleType (List.map (fun (_,vinfo) -> vinfo.vtyp) params) in
     Tuple (eops,tuple_typ)
   else
     raise NoParameters
@@ -1055,14 +1159,6 @@ let args_to_exp : exp list -> exp
     Lv (Tuple (eops,tuple_typ))
   else
     raise NoParameters
-
-let is_static_call : id list -> stmt -> bool
-= fun cnames stmt ->
-  match stmt with
-  | Call (_,Lv (Var (f,_)),_,_,_,_,_) -> true
-  | Call (_,Lv (MemberAccess (Lv (Var (x,_)),_,_,_)),_,_,_,_,_) when List.mem x cnames -> true
-  | Call _ -> false
-  | _ -> failwith "is_static_call"
 
 let keyword_vars =
   ["block.coinbase"; "block.difficulty"; "block.gaslimit"; 
@@ -1100,8 +1196,8 @@ let max_256bit =
 let rec var_lv : lv -> var BatSet.t
 = fun lv ->
   match lv with
-  | Var (x,xinfo) -> BatSet.singleton (x,xinfo.vtype)
-  | MemberAccess (e,x,xinfo,_) -> BatSet.add (x,xinfo.vtype) (var_exp e)
+  | Var (x,xinfo) -> BatSet.singleton (x,xinfo.vtyp)
+  | MemberAccess (e,x,xinfo,_) -> BatSet.add (x,xinfo.vtyp) (var_exp e)
   | IndexAccess (e1,Some e2,_) -> BatSet.union (var_exp e1) (var_exp e2)
   | IndexAccess (e,None,_) -> var_exp e
   | Tuple (eops,_) ->
@@ -1230,7 +1326,7 @@ let common_typ : exp -> exp -> typ
 
 
 let mk_einfo : typ -> einfo
-= fun t -> {eloc=(-1); etyp=t; eid=(-1)}
+= fun t -> {eloc=dummy_loc; etyp=t; eid=(-1)}
 
 let mk_finfo : contract -> finfo
 = fun c ->
@@ -1239,9 +1335,12 @@ let mk_finfo : contract -> finfo
    is_modifier = false;
    mod_list = [];
    mod_list2 = []; (* modifier by inheritance *)
-   ret_param_loc = (-1);
+   param_loc = dummy_loc;
+   ret_param_loc = dummy_loc;
    fvis = Public;
+   mutability = NonPayable;
    fid = (-1);
+   floc = dummy_loc;
    scope = (get_cinfo c).numid;
    scope_s = get_cname c;
    org_scope_s = get_cname c;
@@ -1255,7 +1354,7 @@ let mk_index_access : exp -> exp -> exp
 
 let mk_member_access : exp -> var -> exp
 = fun e (x,t) ->
-  Lv (MemberAccess (e, x, dummy_vinfo_with_typ t, t))
+  Lv (MemberAccess (e, x, mk_vinfo ~typ:t (), t))
 
 let mk_eq : exp -> exp -> exp
 = fun e1 e2 -> BinOp (Eq, e1, e2, mk_einfo (EType Bool))
@@ -1293,12 +1392,16 @@ let mk_mul : exp -> exp -> exp
 let mk_div : exp -> exp -> exp
 = fun e1 e2 -> BinOp (Div, e1, e2, mk_einfo (common_typ e1 e2))
 
+let mk_not : exp -> exp
+= fun e -> UnOp (LNot, e, EType Bool)
+
 (* rename local variables  with given labels *)
 let rec rename_lv : string -> var list -> lv -> lv
 = fun lab gvars lv ->
   match lv with
   | Var (x,xinfo) ->
-    if List.mem (x,xinfo.vtype) gvars then lv
+    if List.mem (x,xinfo.vtyp) gvars then lv
+    else if List.mem x ["@TU"; "@Invest"; "@Invest_sum"; "@extern_called"; "@CA"] then lv
     else Var (x ^ lab, xinfo)
   | MemberAccess (e,x,xinfo,typ) when is_enum typ -> lv
   | MemberAccess (e,x,xinfo,typ) -> MemberAccess (rename_e lab gvars e, x, xinfo, typ)
@@ -1335,6 +1438,9 @@ let rec rename_stmt : string -> var list -> id list -> stmt -> stmt
   match stmt with
   | Assign (lv,e,loc) ->  Assign (rename_lv lab gvars lv, rename_e lab gvars e, loc)
   | Decl lv -> Decl (rename_lv lab gvars lv)
+  | Call (lvop, (Lv (Var ("@extern_log",_)) as e), args,ethop,gasop,loc,site) ->
+    let args' = (List.hd args)::(List.map (rename_e lab gvars) (List.tl args)) in
+    Call (lvop,e,args',ethop,gasop,loc,site)
   | Call (lvop,e,args,ethop,gasop,loc,site) ->
     let lvop' = match lvop with None -> lvop | Some lv -> Some (rename_lv lab gvars lv) in
     let e' =
@@ -1368,14 +1474,27 @@ let rec rename_stmt : string -> var list -> id list -> stmt -> stmt
       ) lst
     in
     Assembly (lst',loc)
-  | If (e,s1,s2) -> If (rename_e lab gvars e, rename_stmt lab gvars cnames s1, rename_stmt lab gvars cnames s2)
+  | If (e,s1,s2,i) -> If (rename_e lab gvars e, rename_stmt lab gvars cnames s1, rename_stmt lab gvars cnames s2, i)
   | Seq (s1,s2) -> Seq (rename_stmt lab gvars cnames s1, rename_stmt lab gvars cnames s2)
   | While (e,s) -> While (rename_e lab gvars e, rename_stmt lab gvars cnames s)
   | Break | Continue | PlaceHolder -> stmt
-
+  | Unchecked (lst,loc) ->
+    let lst' = List.map (rename_stmt lab gvars cnames) lst in
+    Unchecked (lst', loc)
 
 let no_eth_gas_modifiers stmt =
   match stmt with
   | Call (_,_,_,None,None,_,_) -> true
   | Call _ -> false
   | _ -> failwith "no_eth_gas_modifiers"
+
+let tmpvar_cnt = ref 0
+let tmpvar = "Tmp"
+
+let gen_tmpvar ?(org=None) ?(loc=(-1)) typ =
+  tmpvar_cnt:=!tmpvar_cnt+1;
+  Var (tmpvar^(string_of_int !tmpvar_cnt), mk_vinfo ~typ:typ ~org:org ~loc:(mk_loc ~line:loc ~finish_line:loc ()) ())
+
+let ca = (* used in exploit mode *)
+  let msg_sender = Lv (Var ("msg.sender", mk_vinfo ~typ:(EType Address) ())) in
+  ("@CA", mk_vinfo ~typ:(EType Address) ~org:(Some msg_sender) ())

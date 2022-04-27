@@ -13,12 +13,12 @@ let template0 : vformula -> bool
     | [NoOverFlow (b_1,_);
        SigmaEqual ((b_2,_), VVar (total1,_));
        VBinRel (VGeq, VInt n, VVar (total2,_));
-       VBinRel (VGeq, Read (VVar (b_3,_), x1, _), v1);
-       VBinRel (VEq, VVar (b__1,_), Write (VVar (b_4,_), x2, VBinOp (VSub, Read (VVar (b_5,_), x3,_), v2, _)));
-       VBinRel (VEq, VVar (b1,_), Write (VVar (b__2,_), y1, VBinOp (VAdd, Read (VVar (b__3,_), y2,_), v3, _)))
+       VBinRel (VGeq, Read (VVar (b_3,_), x1), v1);
+       VBinRel (VEq, VVar (b__1,_), Write (VVar (b_4,_), x2, VBinOp (VSub, Read (VVar (b_5,_), x3), v2, _)));
+       VBinRel (VEq, VVar (b1,_), Write (VVar (b__2,_), y1, VBinOp (VAdd, Read (VVar (b__3,_), y2), v3, _)))
       ],
-      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b2,_), x4,_), Read (VVar (b3,_), y3,_), _),
-                                   Read (VVar (b4,_), x5,_))
+      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b2,_), x4), Read (VVar (b3,_), y3), _),
+                                   Read (VVar (b4,_), x5))
       when BatBig_int.lt_big_int (BatBig_int.add n n) max_256bit &&
            total1 = total2 &&
            b_1 = b_2 && b_2 = b_3 && b_3 = b_4 && b_4 = b_5 &&
@@ -31,12 +31,12 @@ let template0 : vformula -> bool
     | [NoOverFlow (b_1,_);
        SigmaEqual ((b_2,_), VVar (total1,_));
        VBinRel (VEq,VVar (total2,_), VInt n); (* the only difference. *)
-       VBinRel (VGeq, Read (VVar (b_3,_), x1, _), v1);
-       VBinRel (VEq, VVar (b__1,_), Write (VVar (b_4,_), x2, VBinOp (VSub, Read (VVar (b_5,_), x3,_), v2, _)));
-       VBinRel (VEq, VVar (b1,_), Write (VVar (b__2,_), y1, VBinOp (VAdd, Read (VVar (b__3,_), y2,_), v3, _)))
+       VBinRel (VGeq, Read (VVar (b_3,_), x1), v1);
+       VBinRel (VEq, VVar (b__1,_), Write (VVar (b_4,_), x2, VBinOp (VSub, Read (VVar (b_5,_), x3), v2, _)));
+       VBinRel (VEq, VVar (b1,_), Write (VVar (b__2,_), y1, VBinOp (VAdd, Read (VVar (b__3,_), y2), v3, _)))
       ],
-      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b2,_), x4,_), Read (VVar (b3,_), y3,_), _),
-                                   Read (VVar (b4,_), x5,_))
+      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b2,_), x4), Read (VVar (b3,_), y3), _),
+                                   Read (VVar (b4,_), x5))
       when BatBig_int.lt_big_int (BatBig_int.add n n) max_256bit &&
            total1 = total2 &&
            b_1 = b_2 && b_2 = b_3 && b_3 = b_4 && b_4 = b_5 &&
@@ -58,10 +58,10 @@ let template1 : vformula -> bool
     | [NoOverFlow (b_1,_);
        SigmaEqual ((b_2,_), VVar (total1,_));
        VBinRel (VEq, VVar (total2,_), VInt n);
-       VBinRel (VGeq, Read (VVar (b_3,_), x1, _), v1);
-       VBinRel (VEq, VVar (b1,_), Write (VVar (b_4,_), y1, VBinOp (VAdd, Read (VVar (b_5,_), y2,_), v2, _)))
+       VBinRel (VGeq, Read (VVar (b_3,_), x1), v1);
+       VBinRel (VEq, VVar (b1,_), Write (VVar (b_4,_), y1, VBinOp (VAdd, Read (VVar (b_5,_), y2), v2, _)))
       ],
-      VBinRel (VGeq, Read (VVar (b2,_), x2,_), v3)
+      VBinRel (VGeq, Read (VVar (b2,_), x2), v3)
       when is_renamed b_1 && is_renamed b_2 && is_renamed b_3 && is_renamed b_4 && is_renamed b_5 &&
            not (is_renamed b1) && not (is_renamed b2) &&
            BatBig_int.lt_big_int (BatBig_int.add n n) max_256bit &&
@@ -74,9 +74,9 @@ let template1 : vformula -> bool
       -> true
       (* Similar to template 4. *)
     | [NoOverFlow (b_1,_);
-       VBinRel (VGeq, Read (VVar (b_2,_), x1, _), v1);
-       VBinRel (VEq, VVar (b1,_), Write (VVar (b_3,_), x2, VBinOp (VSub, Read (VVar (b_4,_), x3,_), v2, _)));
-       VBinRel (VEq, p1, Read (VVar (b2,_), y,_));
+       VBinRel (VGeq, Read (VVar (b_2,_), x1), v1);
+       VBinRel (VEq, VVar (b1,_), Write (VVar (b_3,_), x2, VBinOp (VSub, Read (VVar (b_4,_), x3), v2, _)));
+       VBinRel (VEq, p1, Read (VVar (b2,_), y));
        VBinRel (VEq, q1, v3)
       ],
       VBinRel (VGeq, VBinOp (VAdd, p2, q2, _), p3)
@@ -101,10 +101,10 @@ let template2 : vformula -> bool
     | [NoOverFlow (b1,_);
        SigmaEqual ((b2,_), VVar (total1,_));
        VBinRel (VEq, VVar (total2,_), VInt n);
-       VBinRel (VGeq, Read (VVar (b3,_), x, _), v1)
+       VBinRel (VGeq, Read (VVar (b3,_), x), v1)
       ],
-      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b4,_), y1,_), v2, _),
-                     Read (VVar (b5,_), y2,_))
+      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b4,_), y1), v2, _),
+                     Read (VVar (b5,_), y2))
       when BatBig_int.lt_big_int (BatBig_int.add n n) max_256bit &&
            BatString.equal total1 total2 &&
            BatString.equal b1 b2 && BatString.equal b2 b3 && BatString.equal b3 b4 && BatString.equal b4 b5 &&
@@ -113,10 +113,10 @@ let template2 : vformula -> bool
     | [NoOverFlow (b1,_);
        SigmaEqual ((b2,_), VVar (total1,_));
        VBinRel (VGeq, VInt n, VVar (total2,_)); (* the only differnece compared to above one. *)
-       VBinRel (VGeq, Read (VVar (b3,_), x, _), v1)
+       VBinRel (VGeq, Read (VVar (b3,_), x), v1)
       ],
-      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b4,_), y1,_), v2, _),
-                     Read (VVar (b5,_), y2,_))
+      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b4,_), y1), v2, _),
+                     Read (VVar (b5,_), y2))
       when BatBig_int.lt_big_int (BatBig_int.add n n) max_256bit &&
            BatString.equal total1 total2 &&
            BatString.equal b1 b2 && BatString.equal b2 b3 && BatString.equal b3 b4 && BatString.equal b4 b5 &&
@@ -133,10 +133,10 @@ let template3 : vformula -> bool
     match l,con with
     | [NoOverFlow (b1,_);
        SigmaEqual ((b2,_), VInt n);
-       VBinRel (VGeq, Read (VVar (b3,_), x, _), v1)
+       VBinRel (VGeq, Read (VVar (b3,_), x), v1)
       ],
-      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b4,_), y1,_), v2, _),
-                                   Read (VVar (b5,_), y2,_))
+      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b4,_), y1), v2, _),
+                                   Read (VVar (b5,_), y2))
       when BatBig_int.lt_big_int (BatBig_int.add n n) max_256bit &&
            BatString.equal b1 b2 && BatString.equal b2 b3 && BatString.equal b3 b4 && BatString.equal b4 b5 &&
            equal_ve v1 v2 && equal_ve y1 y2
@@ -145,8 +145,8 @@ let template3 : vformula -> bool
        SigmaEqual ((b2,_), VVar (total1,_));
        VBinRel (VGeq, VInt n, VVar (total2,_));
       ],
-      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b3,_), x1,_), Read (VVar (b4,_), y,_), _),
-                                   Read (VVar (b5,_), x2,_))
+      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b3,_), x1), Read (VVar (b4,_), y), _),
+                                   Read (VVar (b5,_), x2))
       when BatBig_int.lt_big_int (BatBig_int.add n n) max_256bit &&
            total1=total2 &&
            b1=b2 && b2=b3 && b3=b4 && b4=b5 &&
@@ -156,8 +156,8 @@ let template3 : vformula -> bool
        SigmaEqual ((b2,_), VVar (total1,_));
        VBinRel (VEq, VVar (total2,_), VInt n); (* the only difference *)
       ],
-      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b3,_), x1,_), Read (VVar (b4,_), y,_), _),
-                                   Read (VVar (b5,_), x2,_))
+      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b3,_), x1), Read (VVar (b4,_), y), _),
+                                   Read (VVar (b5,_), x2))
       when BatBig_int.lt_big_int (BatBig_int.add n n) max_256bit &&
            total1=total2 &&
            b1=b2 && b2=b3 && b3=b4 && b4=b5 &&
@@ -177,15 +177,16 @@ let template4 : vformula -> bool
   List.exists (fun l ->
     match l,con with
     | [NoOverFlow (b_1,_);
-       VBinRel (VGeq, Read (VVar (b_2,_), x1, _), v1);
-       VBinRel (VEq, VVar (b1,_), Write (VVar (b_3,_), x2, VBinOp (VSub, Read (VVar (b_4,_), x3,_), v2, _)))
+       VBinRel (VGeq, Read (VVar (b_2,_), x1), v1);
+       VBinRel (VEq, VVar (b1,_), Write (VVar (b_3,_), x2, VBinOp (VSub, Read (VVar (b_4,_), x3), v2, _)))
       ],
-      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b2,_), y1,_), v3, _),
-                     Read (VVar (b3,_), y2,_))
-      when is_renamed b_1 && is_renamed b_2 && is_renamed b_3 && is_renamed b_4 &&
-           not (is_renamed b1) && not (is_renamed b2) && not (is_renamed b3) &&
+      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b2,_), y1), v3, _),
+                     Read (VVar (b3,_), y2))
+      when (* is_renamed b_1 && is_renamed b_2 && is_renamed b_3 && is_renamed b_4 &&
+           not (is_renamed b1) && not (is_renamed b2) && not (is_renamed b3) && *)
            BatString.equal b_1 b_2 && BatString.equal b_2 b_3 && BatString.equal b_3 b_4 &&
            BatString.equal b1 b2 && BatString.equal b2 b3 &&
+           not (BatString.equal b_1 b1) &&
            equal_ve x1 x2 && equal_ve x2 x3 &&
            equal_ve y1 y2 &&
            equal_ve v1 v2 && equal_ve v2 v3
@@ -233,12 +234,12 @@ let template6 : vformula -> bool
   let lst_3 = pre |> list_of_conjuncts |> cartesian_3 in
   List.exists (fun l ->
     match l,con with
-    | [VBinRel (rel1, Read (VVar (b_1,_), f1, _), v1);
-       VBinRel (rel2, VBinOp (VAdd, Read (VVar (b_2,_), t1, _), v2, _), Read (VVar (b_3,_), t2, _));
-       VBinRel (VEq, VVar (b1,_), Write (VVar (b_4,_), f2, VBinOp (VSub, Read (VVar (b_5,_), f3,_), v3, _)))
+    | [VBinRel (rel1, Read (VVar (b_1,_), f1), v1);
+       VBinRel (rel2, VBinOp (VAdd, Read (VVar (b_2,_), t1), v2, _), Read (VVar (b_3,_), t2));
+       VBinRel (VEq, VVar (b1,_), Write (VVar (b_4,_), f2, VBinOp (VSub, Read (VVar (b_5,_), f3), v3, _)))
       ],
-      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b2,_), t3, _), v4, _),
-                     Read (VVar (b3,_), t4,_))
+      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b2,_), t3), v4, _),
+                     Read (VVar (b3,_), t4))
       when BatString.equal b_1 b_2 && BatString.equal b_2 b_3 && BatString.equal b_3 b_4 && BatString.equal b_4 b_5 &&
            BatString.equal b1 b2 && BatString.equal b2 b3 &&
            not (BatString.equal b_1 b1) &&
@@ -247,12 +248,12 @@ let template6 : vformula -> bool
            equal_ve v1 v2 && equal_ve v2 v3 && equal_ve v3 v4 &&
            (rel1 = VGeq || rel1 = VGt) && (rel2 = VGeq || rel2 = VGt)
       -> true
-    | [VBinRel (VGeq, Read (VVar (b_1,_), VVar (f1,_), _), x1);
-       VBinRel (VGt, VBinOp (VAdd, Read (VVar (b_2,_), VVar (t1,_), _), y1, _), Read (VVar (b_3,_), VVar (t2,_), _));
-       VBinRel (VEq, VVar (b1,_), Write (VVar (b_4,_), VVar (f2,_), VBinOp (VSub, Read (VVar (b_5,_), VVar (f3,_),_), x2, _)))
+    | [VBinRel (VGeq, Read (VVar (b_1,_), VVar (f1,_)), x1);
+       VBinRel (VGt, VBinOp (VAdd, Read (VVar (b_2,_), VVar (t1,_)), y1, _), Read (VVar (b_3,_), VVar (t2,_)));
+       VBinRel (VEq, VVar (b1,_), Write (VVar (b_4,_), VVar (f2,_), VBinOp (VSub, Read (VVar (b_5,_), VVar (f3,_)), x2, _)))
       ],
-      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b2,_), VVar (t3,_), _), y2, _),
-                     Read (VVar (b3,_), VVar (t4,_),_))
+      VBinRel (VGeq, VBinOp (VAdd, Read (VVar (b2,_), VVar (t3,_)), y2, _),
+                     Read (VVar (b3,_), VVar (t4,_)))
       when is_renamed b_1 && is_renamed b_2 && is_renamed b_3 && is_renamed b_4 && is_renamed b_5 &&
            not (is_renamed b1) && not (is_renamed b2) && not (is_renamed b3) &&
            BatString.equal b_1 b_2 && BatString.equal b_2 b_3 && BatString.equal b_3 b_4 && BatString.equal b_4 b_5 && 
@@ -382,12 +383,18 @@ let template11 : vformula -> bool
     | _ -> false
   ) lst_2
 
+let pre_contain_con : vformula -> vformula -> bool
+= fun pre con ->
+  let lst = list_of_conjuncts pre in
+  List.exists (fun pre' -> equal_vf pre' con) lst
+
 let valid_template : vformula -> bool
 = fun vf ->
   match vf with
   | VTrue -> true
   | Imply (VFalse,_) -> true
   | Imply (_,VTrue) -> true
+  | Imply (pre,con) when pre_contain_con pre con -> true
   | Imply (_,VNot (VBinRel (VEq,VInt n1,VInt n2))) ->
     not (BatBig_int.equal n1 n2)
   | Imply (_,VBinRel (VGeq, (* e.g., v >= (v*99)/100 *)

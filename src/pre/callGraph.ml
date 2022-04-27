@@ -44,11 +44,12 @@ let rec edges_s : id list -> FuncMap.t -> func -> stmt -> edge BatSet.t -> edge 
       BatSet.add (get_fkey curf, get_fkey callee) acc
     ) callees edges
   | Skip -> edges
-  | If (e,s1,s2) -> edges |> edges_s cnames fmap curf s1 |> edges_s cnames fmap curf s2
+  | If (e,s1,s2,i) -> edges |> edges_s cnames fmap curf s1 |> edges_s cnames fmap curf s2
   | While (e,s) -> edges_s cnames fmap curf s edges
   | Break | Continue | Return _
   | Throw | Assume _ | Assert _
   | Assembly _ | PlaceHolder -> edges
+  | Unchecked (lst,_) -> list_fold (edges_s cnames fmap curf) lst edges
 
 let edges_f ?(inlined_cfg=true) : id list -> FuncMap.t -> func -> edge BatSet.t -> edge BatSet.t
 = fun cnames fmap f edges ->
@@ -83,14 +84,27 @@ let onestep_callees : fkey BatSet.t -> edge BatSet.t -> fkey BatSet.t
     else acc
   ) edges callees
 
-let rec transitive : fkey BatSet.t -> edge BatSet.t -> fkey BatSet.t
-= fun callees edges ->
-  let callees' = onestep_callees callees edges in
-  if BatSet.subset callees' callees then callees'
-  else transitive callees' edges
-  
+let onestep_callers : fkey BatSet.t -> edge BatSet.t -> fkey BatSet.t
+= fun callers edges ->
+  BatSet.fold (fun (k1,k2) acc ->
+    if BatSet.mem k2 callers then BatSet.add k1 acc
+    else acc
+  ) edges callers
+
+let rec fix f : fkey BatSet.t -> edge BatSet.t -> fkey BatSet.t
+= fun fkeys edges ->
+  let next = f fkeys edges in
+  if BatSet.subset next fkeys then next
+  else fix f next edges
+
+let transitive_callees : fkey BatSet.t -> edge BatSet.t -> fkey BatSet.t
+= fun init edges -> fix onestep_callees init edges
+
+let transitive_callers : fkey BatSet.t -> edge BatSet.t -> fkey BatSet.t
+= fun init edges -> fix onestep_callers init edges
+
 let compute_reachable_funcs : id list -> FuncMap.t -> pgm -> fkey BatSet.t
-= fun cnames fmap p -> transitive (init_callees p) (collect_call_edges cnames fmap p)
+= fun cnames fmap p -> transitive_callees (init_callees p) (collect_call_edges cnames fmap p)
 
 let rm_unreach_c : fkey BatSet.t -> contract -> contract
 = fun reachable c ->

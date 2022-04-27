@@ -13,7 +13,7 @@ let update_params : func -> Mem.t -> Mem.t
     (* For interval domains, always assign top values for parameters of public functions *)
     let params = get_params f in
     List.fold_left (fun acc (x,xinfo) ->
-      let loc = Loc.of_var x xinfo.vtype in
+      let loc = Loc.of_var x xinfo.vtyp in
       let v = Mem.find loc mem in
       let itop = Itv.top in
       Mem.update loc (Val.update_itv itop v) acc
@@ -51,15 +51,15 @@ let weed_out : Global.t -> Mem.t -> Mem.t
 let run : pgm -> Global.t -> PathSet.t -> Mem.t 
 = fun pgm global paths ->
   let main_name = get_cname (get_main_contract pgm) in
-  Profiler.start "Performing Interval Analysis ... "; (* DEV *)
+  Profiler.start "Performing Interval Analysis ... ";
   let init = List.fold_left (fun acc g -> Mem.update g (Itv.bot, GTaint.singleton g, BTaint.bot) acc) Mem.bot global.gvars in 
   let mem = fix global main_name 0 paths init in
   let mem = weed_out global mem in
-  Profiler.finish "Performing Interval Analysis ... "; (* DEV *)
-  if !Options.debug = "itv" || !Options.debug = "itvstop" then (* DEV *)
-   (prerr_endline "=== Results  ==="; (* DEV *)
-    prerr_endline "Note: The results will be implicitly conjoined with relavant queries."; (* DEV *)
-    prerr_endline (Mem.to_string mem); (* DEV *)
-    prerr_endline ""); (* DEV *)
-  if !Options.debug = "itvstop" then assert false; (* DEV *)
+  Profiler.finish "Performing Interval Analysis ... ";
+  if !Options.debug = "itv" || !Options.debug = "itvstop" then
+   (prerr_endline "=== Results  ===";
+    prerr_endline "Note: The results will be implicitly conjoined with relavant queries.";
+    prerr_endline (Mem.to_string mem);
+    prerr_endline "");
+  if !Options.debug = "itvstop" then assert false;
   mem

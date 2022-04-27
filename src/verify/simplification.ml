@@ -23,6 +23,7 @@ let rec norm_vf : vformula -> vformula
     when equal_ve x1 x2 && equal_ve y1 y2 -> VBinRel (VGt,x1,y1)
   | VAnd (VBinRel (VGeq,x1,y1), VBinRel (VGeq,y2,x2))
     when equal_ve x1 x2 && equal_ve y1 y2 -> VBinRel (VEq,x1,y1)
+  | VAnd (VBinRel (VEq,e1,VCond VTrue), VBinRel(VEq,e2,VCond VFalse)) -> VFalse
   | VAnd (f1,f2) -> VAnd (norm_vf f1, norm_vf f2)
   | VOr (VTrue,_) -> VTrue
   | VOr (_,VTrue) -> VTrue
@@ -66,7 +67,7 @@ let rec norm_vf : vformula -> vformula
   | VBinRel (VGeq, VVar (_,t), VInt n) when is_uintkind t && BatBig_int.sign_big_int n = 0 -> VTrue
   | VBinRel (rel,e1,e2) -> VBinRel (rel, norm_ve e1, norm_ve e2)
   | Imply (f1,f2) -> Imply (norm_vf f1, norm_vf f2)
-  | SigmaEqual _ | NoOverFlow _ -> vf
+  | SigmaEqual _ | NoOverFlow _ | UntrustSum _ | UntrustSum2 _ -> vf
   | ForAll (vars,f) -> ForAll (vars, norm_vf f)
   | Label (_,f) -> norm_vf f
 
@@ -74,7 +75,7 @@ and norm_ve : vexp -> vexp
 = fun ve ->
   match ve with
   | VInt _ | VVar _ -> ve
-  | Read (e1,e2,t) -> Read (norm_ve e1, norm_ve e2, t)
+  | Read (e1,e2) -> Read (norm_ve e1, norm_ve e2)
   | Write (e1,e2,e3) -> Write (norm_ve e1, norm_ve e2, norm_ve e3)
 
   (* constant folding *)
@@ -104,7 +105,7 @@ and norm_ve : vexp -> vexp
   | VBinOp (bop,e1,e2,t) -> VBinOp (bop, norm_ve e1, norm_ve e2, t)
   | VUnOp (VNeg,VInt n,ConstInt) -> VInt (BatBig_int.neg n)
   | VUnOp (uop,e,t) -> VUnOp (uop, norm_ve e, t)
-  | VCast(t,e) when t = get_type_vexp e -> (* E.g., uint(uint(n)) => uint, int_const(100) => 100 *)
+  | VCast(t,e) when t = get_typ_vexp e -> (* E.g., uint(uint(n)) => uint, int_const(100) => 100 *)
     norm_ve e
   | VCast (t,e) -> VCast (t, norm_ve e)
   | VCond f -> VCond (norm_vf f)
@@ -120,7 +121,7 @@ let rec vf_to_set : vformula -> FormulaSet.t
   | VTrue | VFalse -> FormulaSet.singleton vf
   | VAnd (f1,f2) -> FormulaSet.union (vf_to_set f1) (vf_to_set f2)
   | VBinRel _ -> FormulaSet.singleton vf
-  | SigmaEqual _ | NoOverFlow _ -> FormulaSet.singleton vf
+  | SigmaEqual _ | NoOverFlow _ | UntrustSum _ | UntrustSum2 _ -> FormulaSet.singleton vf
   | VNot _ -> FormulaSet.singleton vf
   | VOr _ -> FormulaSet.singleton vf
   | Imply _ -> raise (Failure "vf_to_set : Imply")
@@ -160,7 +161,6 @@ let rec msg_num_const : Mem.t -> vformula -> vformula
   | VBinRel (VEq, VVar (x,xt), VInt n)
   | VBinRel (VGeq, VInt n, VVar (x,xt)) ->
     let itv = Val.itv_of (Mem.find2 (x,xt) mem) in
-    (* NOTE: dangerous if analysis is not bit-precise *)
     if is_uint256 xt && Itv.is_bot itv then VFalse
     else
     (match itv with
@@ -168,7 +168,7 @@ let rec msg_num_const : Mem.t -> vformula -> vformula
        VBinRel (VEq, VVar (x,xt), VInt n)
      | _ -> vf)
   | VBinRel _ -> vf
-  | SigmaEqual _ | NoOverFlow _ -> vf
+  | SigmaEqual _ | NoOverFlow _ | UntrustSum _ | UntrustSum2 _ -> vf
   | ForAll _ -> vf
   | VNot _ | VOr _
   | Imply _ | Label _ -> raise (Failure "msg_num_const")
@@ -199,6 +199,7 @@ let rec include_pow_vf : vformula -> bool
   | Imply (f1,f2) -> include_pow_vf f1 || include_pow_vf f2
   | SigmaEqual (x,e) -> include_pow_ve e
   | NoOverFlow _ -> false
+  | UntrustSum _ | UntrustSum2 _ -> false
   | ForAll (vars,f) -> include_pow_vf f
   | Label (l,f) -> include_pow_vf f
 
@@ -206,7 +207,7 @@ and include_pow_ve : vexp -> bool
 = fun ve ->
   match ve with
   | VInt _ | VVar _ -> false
-  | Read (e1,e2,_) -> include_pow_ve e1 || include_pow_ve e2
+  | Read (e1,e2) -> include_pow_ve e1 || include_pow_ve e2
   | Write (e1,e2,e3) -> include_pow_ve e1 || include_pow_ve e2 || include_pow_ve e3
   | VBinOp (VPower,_,_,_) -> true
   | VBinOp (_,e1,e2,_) -> include_pow_ve e1 || include_pow_ve e2
@@ -239,7 +240,7 @@ let rec rm_pow_vf : Mem.t -> vformula -> vformula * vexp list
     let (f1',lst1) = rm_pow_vf mem f1 in
     let (f2',lst2) = rm_pow_vf mem f2 in
     (Imply (f1',f2'), lst1 @ lst2)
-  | SigmaEqual _ | NoOverFlow _ -> (vf,[])
+  | SigmaEqual _ | NoOverFlow _ | UntrustSum _ | UntrustSum2 _ -> (vf,[])
   | ForAll (vars,f) ->
     let (f',lst) = rm_pow_vf mem f in
     (ForAll (vars, f'), lst)
@@ -277,15 +278,16 @@ and rm_pow_ve : Mem.t -> vexp -> vexp * vexp list
      | _ ->
        if Itv.is_const itv_ve' then
          (VCast (t, VInt (Itv.lower_int itv_ve')), lst1 @ lst2)
-       else (VVar (gen_newsym t), lst1 @ lst2))
+       else (ve', lst1 @ lst2))
+       (* else (VVar (gen_newsym t), lst1 @ lst2)) *)
   | VBinOp (bop,e1,e2,t) ->
     let (e1',lst1) = rm_pow_ve mem e1 in
     let (e2',lst2) = rm_pow_ve mem e2 in
     (VBinOp (bop, e1', e2', t), lst1 @ lst2)
-  | Read (e1,e2,t) ->
+  | Read (e1,e2) ->
     let (e1',lst1) = rm_pow_ve mem e1 in
     let (e2',lst2) = rm_pow_ve mem e2 in
-    (Read (e1', e2', t), lst1 @ lst2)
+    (Read (e1', e2'), lst1 @ lst2)
   | Write (e1,e2,e3) ->
     let (e1',lst1) = rm_pow_ve mem e1 in
     let (e2',lst2) = rm_pow_ve mem e2 in
@@ -293,7 +295,7 @@ and rm_pow_ve : Mem.t -> vexp -> vexp * vexp list
     (Write (e1', e2', e3'), lst1 @ lst2 @ lst3)
   | VUnOp (uop,e,t) ->
     let (e',lst) = rm_pow_ve mem e in
-    if get_type_vexp e' = t then (VUnOp (uop, e', t), lst)
+    if get_typ_vexp e' = t then (VUnOp (uop, e', t), lst)
     else
       (* some fixed-size bit expressions may be converted into integer constant types *)
       (VUnOp (uop, VCast (t, e'), t), lst)
@@ -334,66 +336,97 @@ let remove_pow : vformula -> vformula
   final
 
 let rec prop_eq_vf : vformula -> vformula -> vformula
-= fun whole vf ->
+= fun state vf ->
   match vf with
   | VTrue | VFalse -> vf
-  | VNot f -> VNot (prop_eq_vf whole f)
-  | VAnd (f1,f2) -> (* VAnd (prop_eq_vf whole f1, prop_eq_vf whole f2)  *)
-    let f1' = compress (prop_eq_vf whole f1) in
-    let f2' = compress (prop_eq_vf whole f2) in
-    VAnd (f1',f2')
-  | VOr (f1,f2) -> VOr (prop_eq_vf whole f1, prop_eq_vf whole f2)
-  | VBinRel(VEq,e1,e2) when is_uintkind (get_type_vexp e1) -> VBinRel (VEq, e1, prop_eq_ve whole vf e2)
-  | VBinRel (brel,e1,e2) -> VBinRel (brel, prop_eq_ve whole vf e1, prop_eq_ve whole vf e2)
-  | Imply (f1,f2) -> Imply (prop_eq_vf whole f1, prop_eq_vf whole f2)
-  | SigmaEqual _ | NoOverFlow _ -> vf
-  | ForAll (bvs,f) -> ForAll (bvs, prop_eq_vf whole f)
-  | Label (l,f) -> Label (l, prop_eq_vf whole f)
+  | VNot f -> VNot (prop_eq_vf state f)
+  | VAnd (f1,f2) -> VAnd (prop_eq_vf state f1, prop_eq_vf state f2)
+  | VOr (f1,f2) -> VOr (prop_eq_vf state f1, prop_eq_vf state f2)
 
-(* add 'ctx' to avoid trivial transformation (e.g., ... /\ a=b /\ ... => ... /\ b=b /\ ... ) *)
-and prop_eq_ve : vformula -> vformula -> vexp -> vexp
-= fun whole ctx ve ->
+  | VBinRel (VEq,e1,VCond VTrue) ->
+    let vf' = VBinRel (VEq, prop_eq_ve state e1, VCond VTrue) in
+    if equal_vf VTrue (normalize vf') then vf
+    else if equal_vf vf vf' then vf
+    else
+      (* let _ = print_endline "\nHI1" in
+      let _ = print_endline (to_string_vformula vf) in
+      let _ = print_endline (to_string_vformula vf') in *)
+      vf'
+
+  | VBinRel (VEq,e1,e2) (* when is_uintkind (get_typ_vexp e1) *) ->
+    let vf' = VBinRel (VEq, e1, prop_eq_ve state e2) in
+    if equal_vf VTrue (normalize vf') then vf (* to avoid losing info, .e.g., a=b /\ ... => b=b /\ ... *)
+    else if equal_vf vf vf' then vf
+    else
+      (* let _ = print_endline "\nHI1" in
+      let _ = print_endline (to_string_vformula vf) in
+      let _ = print_endline (to_string_vformula vf') in *)
+      vf'
+
+  | VBinRel (brel,e1,e2) ->
+    let vf' = VBinRel (brel, prop_eq_ve state e1, prop_eq_ve state e2) in
+    if equal_vf VTrue (normalize vf') then vf (* to avoid losing info, .e.g., a=b /\ ... => b=b /\ ... *)
+    else if equal_vf vf vf' then vf
+    else
+      (* let _ = print_endline "\nHI2" in
+      let _ = print_endline (to_string_vformula vf) in
+      let _ = print_endline (to_string_vformula vf') in *)
+      (* let _ = print_endline (to_string_vformula state ) in *)
+      vf'
+  | Imply (f1,f2) -> Imply (prop_eq_vf state f1, prop_eq_vf state f2)
+  | SigmaEqual _ | NoOverFlow _ | UntrustSum _ | UntrustSum2 _ -> vf
+  | ForAll (bvs,f) -> ForAll (bvs, prop_eq_vf state f)
+  | Label (l,f) -> Label (l, prop_eq_vf state f)
+
+and prop_eq_ve : vformula -> vexp -> vexp
+= fun state ve ->
   match ve with
   | VInt _ -> ve
     (* the goal is to make forms that can be checked with templates *)
     (* O: tmp=b[f] /\ tmp>=v ~> b[f]>=v *)
     (* X: b' = write (b'',f,b''[f]-v]) /\ b = write (b',t,b'[t]+v) ~>
      *    b = write (write(b'',f,b''[f]-v), t, (write(b'',f',b''[f]-v)[t] + v) *)
-  | VVar x when not (is_mapping (snd x)) ->
-    let state = match whole with Imply (pre,con) -> pre | _ -> assert false in
-    let reps = collect_reps ctx state x in
-    if ExpSet.is_empty reps then ve
+  | VVar x when is_mapping (snd x) || is_mapping2 (snd x) -> ve
+  | VVar x ->
+    let reps = collect_reps state x in
+    if not (ExpSet.cardinal reps = 1) then ve
     else
       let rep = ExpSet.choose reps in
       (match rep with
        | VInt n -> VCast (snd x, VInt n) | _ -> rep)
-  | VVar x -> ve
-  | Read (e1,e2,t) -> Read (prop_eq_ve whole ctx e1, prop_eq_ve whole ctx e2, t)
-  | Write (e1,e2,e3) -> Write (prop_eq_ve whole ctx e1, prop_eq_ve whole ctx e2, prop_eq_ve whole ctx e3)
-  | VBinOp (bop,e1,e2,t) -> VBinOp (bop, prop_eq_ve whole ctx e1, prop_eq_ve whole ctx e2, t)
-  | VUnOp (uop,e,t) -> VUnOp (uop, prop_eq_ve whole ctx e, t)
-  | VCast (t,e) -> VCast (t, prop_eq_ve whole ctx e)
-  | VCond f -> VCond (prop_eq_vf whole f)
-  | Ite (e1,e2,e3) -> Ite (prop_eq_ve whole ctx e1, prop_eq_ve whole ctx e2, prop_eq_ve whole ctx e3)
-  | Uninterp (fname,args,typ) -> Uninterp (fname, List.map (prop_eq_ve whole ctx) args, typ)
+  | Read (e1,e2) -> Read (prop_eq_ve state e1, prop_eq_ve state e2)
+  | Write (e1,e2,e3) -> Write (prop_eq_ve state e1, prop_eq_ve state e2, prop_eq_ve state e3)
+  | VBinOp (bop,e1,e2,t) -> VBinOp (bop, prop_eq_ve state e1, prop_eq_ve state e2, t)
+  | VUnOp (uop,e,t) -> VUnOp (uop, prop_eq_ve state e, t)
+  | VCast (t,e) -> VCast (t, prop_eq_ve state e)
+  | VCond f -> VCond (prop_eq_vf state f)
+  | Ite (e1,e2,e3) -> Ite (prop_eq_ve state e1, prop_eq_ve state e2, prop_eq_ve state e3)
+  | Uninterp (fname,args,typ) -> Uninterp (fname, List.map (prop_eq_ve state) args, typ)
 
-(* collect replacements from conjuncts that are not ctx *)
-and collect_reps : vformula -> vformula -> var -> ExpSet.t
-= fun ctx vf target ->
+(* collect replacements for 'target' *)
+and collect_reps : vformula -> var -> ExpSet.t
+= fun vf target ->
   match vf with
   | VTrue | VFalse -> ExpSet.empty
   | VNot _ -> ExpSet.empty
-  | VAnd (f1,f2) -> ExpSet.union (collect_reps ctx f1 target) (collect_reps ctx f2 target)
+  | VAnd (f1,f2) -> ExpSet.union (collect_reps f1 target) (collect_reps f2 target)
   | VOr (f1,f2) -> ExpSet.empty
+
   | VBinRel (VEq, VVar x, VBinOp (VDiv,_,_,_)) -> ExpSet.empty
+
   | VBinRel (VEq, VVar x, Ite _) -> ExpSet.empty
-  | VBinRel (VEq, VVar x, ve2) when target=x && not (equal_vf ctx vf) ->
-    ExpSet.singleton ve2
+
+  | VBinRel (VEq, VVar x, VCond VTrue) -> ExpSet.empty
+
+  | VBinRel (VEq, VVar x, ve2) when target = x -> ExpSet.singleton ve2
   | VBinRel _ -> ExpSet.empty
   | Imply _ -> ExpSet.empty
-  | SigmaEqual _ | NoOverFlow _ -> ExpSet.empty
+  | SigmaEqual _ | NoOverFlow _ | UntrustSum _ | UntrustSum2 _ -> ExpSet.empty
   | ForAll (vars,f) -> ExpSet.empty
-  | Label (_,f) -> collect_reps ctx f target
+  | Label (_,f) -> collect_reps f target
 
 let propagate_eq : vformula -> vformula
-= fun vf -> prop_eq_vf vf vf
+= fun vf ->
+  let state = match vf with Imply (pre,con) -> pre | _ -> assert false in
+  let res = prop_eq_vf state vf in
+  res

@@ -1,7 +1,7 @@
 open Lang
+open MakeCfg
 open Vlang
 open Vocab
-open Report
 open Global
 open ItvDom
 open Query
@@ -34,14 +34,14 @@ let weaken_vf2 : vformula -> vid list -> vformula
 let rec get_target : lv -> vexp
 = fun lv ->
   match lv with
-  | Var (id,vinfo) -> VVar (id, vinfo.vtype)
+  | Var (id,vinfo) -> VVar (id, vinfo.vtyp)
   | MemberAccess (e,"length",info,_) ->
-    VVar ("@L", Mapping2 (get_type_exp e, info.vtype))
+    VVar ("@L", Mapping2 (get_type_exp e, info.vtyp))
   | MemberAccess (e,"balance",info,_) ->
-    let _ = assert (info.vtype = EType (UInt 256)) in
+    let _ = assert (info.vtyp = EType (UInt 256)) in
     let _ = assert (is_address (get_type_exp e)) in
-    VVar ("@B", Mapping (Address, info.vtype))
-  | MemberAccess (e,x,xinfo,_) -> VVar (x, Mapping2 (get_type_exp e, xinfo.vtype))
+    VVar ("@B", Mapping (Address, info.vtyp))
+  | MemberAccess (e,x,xinfo,_) -> VVar (x, Mapping2 (get_type_exp e, xinfo.vtyp))
   | IndexAccess (Lv lv,_,_) -> get_target lv
   | _ -> raise (Failure ("semantics (get_target) : " ^ to_string_lv lv))
 
@@ -49,7 +49,7 @@ let rec recur : vexp -> vexp
 = fun ve ->
   match ve with
   | Write (VVar _,_,_) -> ve
-  | Write (Read (ve1,ve2,_),idx,e) -> recur (Write (ve1,ve2,ve))
+  | Write (Read (ve1,ve2),idx,e) -> recur (Write (ve1,ve2,ve))
   | _ -> failwith ("recur : " ^ to_string_vexp ve)
 
 (***********************)
@@ -111,21 +111,20 @@ and convert_lv : lv -> vexp
   | Var (x,_) -> VVar (x,typ)
   | IndexAccess (e1,Some e2,t) when is_dbytes (get_type_exp e1) ->
     let lmap_typ = Mapping2 (get_type_exp e1, EType (UInt 256)) in
-    let size = Read (VVar (length_map, lmap_typ), convert_aexp e1, EType (UInt 256)) in
+    let size = Read (VVar (length_map, lmap_typ), convert_aexp e1) in
     let idx = VBinOp (VSub, VBinOp (VSub, size, VInt BatBig_int.one, EType (UInt 256)), convert_aexp e2, EType (UInt 256)) in
-    Read (convert_aexp e1, idx, typ)
-  | IndexAccess (e1,Some e2,t) -> Read (convert_aexp e1, convert_aexp e2, typ)
+    Read (convert_aexp e1, idx)
+  | IndexAccess (e1,Some e2,t) -> Read (convert_aexp e1, convert_aexp e2)
   | IndexAccess (e,None,_) -> failwith "convert_lv - IndexAccess"
-  | MemberAccess (e,"balance",_,_) ->
-    Read (VVar eth_map, convert_aexp e, EType (UInt 256))
+  | MemberAccess (e,"balance",_,_) -> Read (VVar eth_map, convert_aexp e)
   | MemberAccess (e,"length",_,_) when is_array (get_type_exp e) ->
-    Read (VVar (length_map, Mapping2 (get_type_exp e, typ)), convert_aexp e, typ)
+    Read (VVar (length_map, Mapping2 (get_type_exp e, typ)), convert_aexp e)
   | MemberAccess (_,"selector",_,_) -> VVar (to_string_lv lv,typ) (* typ: bytes4 *)
   | MemberAccess (e,x,xinfo,etyp) when is_enum typ && BatString.exists x "__idx" ->
     let (_,idx) = BatString.split x "__idx" in
     VCast (typ, VInt (BatBig_int.of_int (int_of_string idx)))
   | MemberAccess (e,x,xinfo,etyp) ->
-    Read (VVar (x, Mapping2 (get_type_exp e, xinfo.vtype)), convert_aexp e, xinfo.vtype)
+    Read (VVar (x, Mapping2 (get_type_exp e, xinfo.vtyp)), convert_aexp e)
   | Tuple _ -> failwith ("convert_lv - Tuple : " ^ to_string_lv lv) (* handled in assignment level *)
 
 and convert_bexp : exp -> vformula 
@@ -159,7 +158,9 @@ and convert_bexp_lv : lv -> vformula
   VBinRel (VEq, convert_lv lv, VCond VTrue)
 
 let rewrite_q : vexp -> vexp -> query -> query
-= fun target replacement q -> {q with vc2 = rewrite_vf q.vc2 target replacement}
+= fun target replacement q ->
+  {q with vc2 = match q.vc2 with Imply _ -> q.vc2 | _ -> rewrite_vf q.vc2 target replacement}
+  (* {q with vc2 = rewrite_vf q.vc2 target replacement} *)
 
 let rec assign (lv,e) (vf,qs) =
   let lv_typ = get_type_lv lv in
@@ -213,7 +214,7 @@ let new_bound_var typ = bcnt:=!bcnt+1; ("@i" ^ string_of_int !bcnt, typ)
 (* bvars : accumulated bound variables; accumulated whenever 'mapping' type is encountered. *)
 let rec decl : StructMap.t -> var list -> vexp -> vformula
 = fun smap bvars vexp ->
-  let typ = get_type_vexp vexp in
+  let typ = get_typ_vexp vexp in
   match typ with
   | ConstInt | ConstString | ConstReal -> assert false
   | EType etyp ->
@@ -232,21 +233,21 @@ let rec decl : StructMap.t -> var list -> vexp -> vformula
   | Mapping (etyp',typ') ->
     let i = new_bound_var (EType etyp') in
     let bvars' = bvars @ [i] in
-    let vexp' = Read (vexp, VVar i, typ') in
+    let vexp' = Read (vexp, VVar i) in
     decl smap bvars' vexp'
 
   | Array (t,sizeop) ->
     (match sizeop with
      | None -> (* dynamic array => @L[arr] = 0 *)
-       VBinRel (VEq, Read (VVar (length_map, Mapping2 (typ, EType (UInt 256))), vexp, EType (UInt 256)), VInt BatBig_int.zero)
+       VBinRel (VEq, Read (VVar (length_map, Mapping2 (typ, EType (UInt 256))), vexp), VInt BatBig_int.zero)
      | Some n -> (* static array with size 'n' => @L[arr] = n *)
-       VBinRel (VEq, Read (VVar (length_map, Mapping2 (typ, EType (UInt 256))), vexp, EType (UInt 256)), VInt (BatBig_int.of_int n)))
+       VBinRel (VEq, Read (VVar (length_map, Mapping2 (typ, EType (UInt 256))), vexp), VInt (BatBig_int.of_int n)))
 
   | Struct lst ->
     let members = StructMap.find (get_name_userdef typ) smap in
     let members = List.map (fun m -> (fst m, get_type_var2 m)) members in
     List.fold_left (fun acc m ->
-      let ve = Read (VVar (fst m, Mapping2 (Struct lst, snd m)), vexp, snd m) in (* s.m => m'[s] *)
+      let ve = Read (VVar (fst m, Mapping2 (Struct lst, snd m)), vexp) in (* s.m => m'[s] *)
       let new_f = decl smap bvars ve in
       VAnd (acc, new_f)
     ) VTrue members
@@ -272,9 +273,36 @@ let handle_init_funcs (lvop,f,args) (vf,qs) =
      | "dbytes_init" -> (vf,qs)
      | "string_init" -> (vf,qs)
      | "contract_init" -> (vf,qs)
-     | "struct_init" -> (* must be handled in preprocessing step. *)
-        failwith "struct_init : semantics.ml"
+     | "struct_init" -> failwith "struct_init : semantics.ml" (* must be handled in preprocessing step. *)
      | _ -> failwith ("handle_init_funcs : " ^ f))
+
+let addr1 = "0x" ^ (BatString.repeat "0" 37) ^ "111"
+let addr2 = "0x" ^ (BatString.repeat "0" 37) ^ "222"
+
+let uint1 = "0"
+let uint2 = "600000000000000000"
+let uint3 = "1000000000000000000"
+
+let bytes16 = "0x00000000000000000000000000000001"
+
+let cond1 (a,b,c,d) =
+  VAnd (VBinRel (VEq, a, VInt (BatBig_int.of_string bytes16)),
+    VAnd (VBinRel (VEq, b, VInt (BatBig_int.of_string addr1)),
+      VAnd (VBinRel (VEq, c, VInt (BatBig_int.of_string addr2)), VBinRel (VEq, d, VInt (BatBig_int.of_string uint1)))))
+
+let cond2 (a,b,c,d) =
+  VAnd (VBinRel (VEq, a, VInt (BatBig_int.of_string bytes16)),
+    VAnd (VBinRel (VEq, b, VInt (BatBig_int.of_string addr1)),
+      VAnd (VBinRel (VEq, c, VInt (BatBig_int.of_string addr1)), VBinRel (VEq, d, VInt (BatBig_int.of_string uint2)))))
+
+let cond3 (a,b,c,d) =
+  VAnd (VBinRel (VEq, a, VInt (BatBig_int.of_string bytes16)),
+    VAnd (VBinRel (VEq, b, VInt (BatBig_int.of_string addr1)),
+      VAnd (VBinRel (VEq, c, VInt (BatBig_int.of_string addr2)), VBinRel (VEq, d, VInt (BatBig_int.of_string uint3)))))
+
+let hashout1 = VCast (EType (Bytes 32), VInt (BatBig_int.of_string "0x5dbf7fcec09ae7957550174580f0415015f0e9a5b1985a8bd55613aa9bff2c40"))
+let hashout2 = VCast (EType (Bytes 32), VInt (BatBig_int.of_string "0xfaf9ec944ffac469e076d6ce56060c5d3efb34b6ab7b2c225d78ac5215568db1"))
+let hashout3 = VCast (EType (Bytes 32), VInt (BatBig_int.of_string "0x19900eeb85ea846013af468c24b22b5f08e1dd47e0bb561c5ed03e30d61eee1d"))
 
 let handle_built_in_funcs (lvop,f,args) (vf,qs) =
   match lvop with
@@ -287,7 +315,22 @@ let handle_built_in_funcs (lvop,f,args) (vf,qs) =
      | _ -> failwith ("handle_built_in_funcs: " ^ f))
   | Some lv -> (* lv is in 'Var' pattern *)
     (match f with
-     | "keccak256" | "sha3" | "sha256" | "ripemd160" -> (* outputs hash value *)
+     | "keccak256" | "sha3" -> (* outputs hash value *)
+       let hash_typs = [EType (Bytes 16); EType Address; EType Address; EType (UInt 256)] in
+       if (not (!Options.mode = "exploit") || not (List.map get_type_exp args = hash_typs) || not !check_re) then (vf,qs)
+       else
+         let a,b,c,d = BatList.at args 0, BatList.at args 1, BatList.at args 2, BatList.at args 3 in
+         let a,b,c,d = convert_aexp a, convert_aexp b, convert_aexp c, convert_aexp d in
+         let cond1,cond2,cond3 = cond1 (a,b,c,d), cond2 (a,b,c,d), cond3 (a,b,c,d) in
+         let output = Ite (VCond cond1, hashout1, Ite(VCond cond2, hashout2, Ite(VCond cond3, hashout3, hashout3))) in
+         (* assign *)
+         let target = get_target lv in
+         let replacement = rename target in
+         let vf' = rewrite_vf vf target replacement in
+         let ve' = rewrite_ve output target replacement in
+         let qs' = List.map (rewrite_q target replacement) qs in
+         (VAnd (vf', Label (1, VBinRel (VEq,target,ve'))), qs')
+     | "sha256" | "ripemd160" -> (* outputs hash value *)
        (* if !Options.mode = "exploit" then (VFalse,qs)
        else *) (vf,qs)
      | "ecrecover" -> (* recover address *)
@@ -300,10 +343,10 @@ let handle_built_in_funcs (lvop,f,args) (vf,qs) =
 let transfer_ether loc rcv ether (vf,qs) =
   (* 1. this.balance := this.balance - value *)
   (* 2. rcv.balance := rcv.balance + value *)
-  let balance_info = dummy_vinfo_with_typ_org (EType (UInt 256)) "balance" in
-  let this_info = dummy_vinfo_with_typ_org (Contract !main_contract) "this" in
+  let balance_info = mk_vinfo ~typ:(EType (UInt 256)) () in
+  let this_info = mk_vinfo ~typ:(Contract !main_contract) () in
   let this = Cast (EType Address, Lv (Var ("this", this_info))) in
-  (* let this_info = dummy_vinfo_with_typ_org (EType Address) "this" in
+  (* let this_info = mk_vinfo ~typ:(EType Address) () in
   let this = Lv (Var ("this",this_info)) in *)
   let this_balance = MemberAccess (this,"balance", balance_info, EType (UInt 256)) in
   let this_dec = BinOp (Sub, Lv this_balance, ether, mk_einfo (EType (UInt 256))) in
@@ -341,8 +384,8 @@ let handle_array_built_in smap (lvop,exp,args) fname loc (vf,qs) =
     (* tmp := @L[arr]; arr[tmp] := v; @L[arr] := tmp + 1 *)
     (* Without the first stmt, we get unsound results. *)
     let len_map_typ = Mapping2 (get_type_exp arr, EType (UInt 256)) in
-    let len_arr = IndexAccess (Lv (Var (length_map, dummy_vinfo_with_typ len_map_typ)), Some arr, EType (UInt 256)) in (* @L[arr] *)
-    let tmp = Var (fst (gen_newsym (EType (UInt 256))), dummy_vinfo_with_typ (EType (UInt 256))) in
+    let len_arr = IndexAccess (Lv (Var (length_map, mk_vinfo ~typ:len_map_typ ())), Some arr, EType (UInt 256)) in (* @L[arr] *)
+    let tmp = Var (fst (gen_newsym (EType (UInt 256))), mk_vinfo ~typ:(EType (UInt 256)) ()) in
     let arr_tmp = IndexAccess (arr, Some (Lv tmp), range_typ (get_type_exp arr)) in (* arr[tmp] *)
     let (vf1,qs1) = assign (tmp, Lv len_arr) (vf,qs) in (* first stmt *)
     let snd_stmt =
@@ -375,7 +418,7 @@ let handle_abi fname (vf,qs) =
   | "encodeWithSelector" -> (vf,qs)
   | _ -> raise (Failure ("handle_abi : " ^ fname))
 
-let handle_undefs global (lvop,exp,args) (ethop,gasop) loc curf (vf,qs) =
+let handle_undefs global (lvop,exp,args) (ethop,gasop) loc (vf,qs) =
   match exp with
   | Lv (Var (f,_)) when List.mem f built_in_funcs ->
     handle_built_in_funcs (lvop,f,args) (vf,qs)
@@ -391,25 +434,8 @@ let handle_undefs global (lvop,exp,args) (ethop,gasop) loc curf (vf,qs) =
     (vf, qs)
   | _ ->
     (if !Options.debug = "undeflib" then
-      prerr_endline ("Warning - undefined functions encountred : " ^ to_string_exp exp ^ ", line " ^ string_of_int loc));
+      prerr_endline ("Warning - undefined functions encountred : " ^ to_string_exp exp ^ ", line " ^ string_of_int loc.line));
     (vf, qs)
-
-let handle_static_call global caller (lvop,e,args) vf =
-  let caller_cname = (get_finfo caller).scope_s in
-  let callees = FuncMap.find_matching_funcs caller_cname e (List.map get_type_exp args) global.cnames global.fmap in
-  let _ = assert (BatSet.cardinal callees = 1) in
-  let callee = BatSet.choose callees in
-  (* 1. remove terms that include variables which may be modified in callee *)
-  let k = get_fkey callee in
-  let vf = weaken_vf2 vf (BatSet.to_list (FuncDefUse.find_def_set k global.f_defuse)) in
-  (* 2. if lv exists, replace target var by true *)
-  let final =
-    match lvop with
-    | None -> vf
-    | Some lv ->
-      let def = BatSet.to_list (FuncDefUse.get_def_set_lv lv) in
-      weaken_vf2 vf def in
-  final
 
 let handle_object_call global caller (lvop,e,args) vf =
   match lvop with
@@ -443,15 +469,17 @@ let convert_stmt : Global.t -> func -> Node.t -> vformula * query list -> vformu
   | Assembly (lst,_) ->
     let vars = List.map fst lst in
     (List.fold_left weaken_vf vf vars, qs)
-  | Call (lvop,e,args,ethop,gasop,loc,_) (* built-in functions *)
-    when FuncMap.is_undef e (List.map get_type_exp args) global.fmap ->
-    handle_undefs global (lvop,e,args) (ethop,gasop) loc curf (vf,qs)
-  | Call (lvop,e,args,ethop,gasop,loc,_) when is_static_call global.cnames stmt -> (* static call *)
-    let _ = assert (no_eth_gas_modifiers stmt) in
-    (handle_static_call global curf (lvop,e,args) vf, qs)
-  | Call (lvop,e,args,ethop,gasop,loc,_) -> (* object calls *)
-    if !Options.mode="exploit" then (VFalse, qs)
+
+  | Call (lvop,e,args,ethop,gasop,loc,_) when is_undef_call global.fmap stmt ->
+    handle_undefs global (lvop,e,args) (ethop,gasop) loc (vf,qs)
+
+  | Call (lvop,e,args,ethop,gasop,loc,_) when is_internal_call global.fmap global.cnames stmt -> assert false
+  | Call _ when MakeCfg.is_external_call_node node (Lang.get_cfg curf) -> assert false
+
+  | Call (lvop,e,args,ethop,gasop,loc,_) -> (* external calls *)
+    if !Options.mode="exploit" && not !check_re then (VFalse, qs)
     else
       (handle_object_call global curf (lvop,e,args) vf, qs)
-  | If _ | Seq _ | While _
-  | Break | Continue | PlaceHolder -> failwith ("convert_stmt: " ^ to_string_stmt stmt)
+
+  | If _ | Seq _ | While _ | Break | Continue
+  | PlaceHolder | Unchecked _ -> failwith ("convert_stmt: " ^ to_string_stmt stmt)

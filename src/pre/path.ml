@@ -16,11 +16,29 @@ let to_string : path -> string
 = fun (k,bp) ->
   to_string_fkey k ^ " : " ^ to_string_path bp
 
+(* if len(lst) = 2, returns empty list *)
 let get_mid : 'a list -> 'a list
-= fun lst -> 
+= fun lst ->
   match lst with
   | [] -> []
   | hd::tl -> BatList.remove_at (List.length tl - 1) tl
+
+module Path2 = struct
+  type t = Node.t option * path
+  and path2 = t
+
+  let get_ctx (nop,p) = nop
+
+  let get_fkey (nop,p) = get_fkey p
+  let get_bp (nop,p) = get_bp p
+
+  let to_string (nop,p) =
+    match nop with
+    | None -> to_string p
+    | Some n -> "(" ^ Node.to_string n ^ ", " ^ to_string p ^ ")"
+end
+
+module PathSet2 = BatSet.Make (struct type t = Path2.t let compare = Stdlib.compare end)
 
 (***************************)
 (***************************)
@@ -30,9 +48,9 @@ let get_mid : 'a list -> 'a list
 
 (* returns (processed path set, processing path set, visited root nodes) *)
 (* 'root node' here means cutpoint. *)
-let gen_onestep_bp_path : cfg -> node list -> node BatSet.t -> 
-                         (node list BatSet.t * node list BatSet.t * node BatSet.t)
-= fun g path visited_roots -> 
+let gen_onestep_bp_path : string list -> FuncMap.t -> cfg -> node list -> node BatSet.t ->
+                          (node list BatSet.t * node list BatSet.t * node BatSet.t)
+= fun cnames fmap g path visited_roots ->
   let last = BatList.last path in
   let nexts = succ last g in
   List.fold_left (fun (processed, processing, acc_visited_roots) next ->
@@ -41,32 +59,60 @@ let gen_onestep_bp_path : cfg -> node list -> node BatSet.t ->
       let processing' = if BatSet.mem next visited_roots then processing else BatSet.add [next] processing in
       let acc_visited_roots' = BatSet.add next visited_roots in
       (processed', processing', acc_visited_roots')
+
+    else if is_internal_call_node fmap cnames next g then
+      let processed' = BatSet.add (path@[next]) processed in
+      let processing' = BatSet.add (path@[next]) processing in
+      (processed', processing', acc_visited_roots)
+
+    else if is_external_call_node next g then
+      let processed' = BatSet.add (path@[next]) processed in
+      let processing' = BatSet.add (path@[next]) processing in
+      (processed', processing', acc_visited_roots)
+
+    else if is_exception_node next g && !Options.mode = "exploit" && !Options.check_re then
+      (processed, processing, acc_visited_roots)
+
     else
       (processed, BatSet.add (path@[next]) processing, acc_visited_roots)
   ) (BatSet.empty, BatSet.empty, visited_roots) nexts
 
-let gen_onestep_bp : cfg ->
-                    (node list BatSet.t * node list BatSet.t * node BatSet.t) -> 
-                    (node list BatSet.t * node list BatSet.t * node BatSet.t)
-= fun g (processed, processing, visited_roots) ->
+let gen_onestep_bp : string list -> FuncMap.t -> cfg ->
+                     (node list BatSet.t * node list BatSet.t * node BatSet.t) -> 
+                     (node list BatSet.t * node list BatSet.t * node BatSet.t)
+= fun cnames fmap g (processed, processing, visited_roots) ->
   (* whenever this function is called,
      "processed" and "visited_roots" are accumulated, while processing is reinitialized *)
   BatSet.fold (fun path (acc1, acc2, acc3) ->
-    let (new_processed, new_processing, new_visited_roots) = gen_onestep_bp_path g path acc3 in
+    let (new_processed, new_processing, new_visited_roots) = gen_onestep_bp_path cnames fmap g path acc3 in
     (BatSet.union new_processed acc1, BatSet.union new_processing acc2, BatSet.union new_visited_roots acc3)
   ) processing (processed, BatSet.empty, visited_roots)
 
-let rec fix f g (processed,processing,visited_roots) =
-  let (processed',processing',visited_roots') = f g (processed,processing,visited_roots) in
-    if BatSet.is_empty processing' ||
-      (!Options.mode = "exploit" && BatSet.cardinal processed' >= 50) (* to prevent out-of-memory *)
-      then (processed',processing',visited_roots')
-    else fix f g (processed',processing',visited_roots')
+let is_re_query_node : node -> cfg -> bool
+= fun n g ->
+  match find_stmt n g with
+  | Call (lvop, Lv (MemberAccess (e,"call",_,_)), args, Some eth, gasop, loc, id)
+    when BatSet.mem n g.extern_set -> true
+  | _ -> false
 
-let gen_basic_paths_cfg : cfg -> node list BatSet.t
-= fun g ->
+let all_re_query_in_collected_path : cfg -> node list BatSet.t -> bool
+= fun g paths ->
+  let nodes = nodes_of g in
+  let qnodes = List.filter (fun n -> is_re_query_node n g) nodes in
+  List.for_all (fun n -> BatSet.exists (fun path -> List.mem n path) paths) qnodes
+
+let rec fix f cnames fmap g (processed,processing,visited_roots) =
+  let (processed',processing',visited_roots') = f cnames fmap g (processed,processing,visited_roots) in
+    if BatSet.is_empty processing'
+       || (!Options.mode = "exploit" && not !Options.check_re && BatSet.cardinal processed' >= 50) (* to prevent out-of-memory *)
+       || (!Options.mode = "exploit" && !Options.check_re && BatSet.cardinal processed' >= 80 && all_re_query_in_collected_path g processed')
+      then (processed',processing',visited_roots')
+    else fix f cnames fmap g (processed',processing',visited_roots')
+
+let gen_basic_paths_cfg : string list -> FuncMap.t -> cfg -> node list BatSet.t
+= fun cnames fmap g ->
   let (basic_paths,_,_) = 
-    fix gen_onestep_bp g (BatSet.empty, BatSet.singleton [Node.entry], BatSet.singleton Node.entry) in
+    fix gen_onestep_bp cnames fmap g (BatSet.empty, BatSet.singleton [Node.entry], BatSet.singleton Node.entry) in
   basic_paths
 
 let rec bfs : cfg -> node BatSet.t -> (node * node list) BatSet.t -> node list BatSet.t -> node list BatSet.t
@@ -95,15 +141,15 @@ let rec bfs2 : cfg -> node -> node list -> node list BatSet.t
       BatSet.union (bfs2 g n' (path@[n'])) acc
     ) BatSet.empty nexts
 
-let generate_basic_paths : pgm -> pgm
-= fun pgm ->
+let generate_basic_paths : string list -> FuncMap.t -> pgm -> pgm
+= fun cnames fmap pgm ->
   List.map (fun c ->
     let funcs = get_funcs c in
     let funcs' =
       List.map (fun f ->
         let g = get_cfg f in
         let bps =
-          if !Options.path = 1 then gen_basic_paths_cfg g
+          if !Options.path = 1 then gen_basic_paths_cfg cnames fmap g
           else if !Options.path = 2 then bfs g (BatSet.singleton Node.entry) (BatSet.singleton (Node.entry, [Node.entry])) BatSet.empty
           else if !Options.path = 3 then bfs2 g Node.entry [Node.entry]
           else failwith "improper path options" in
@@ -153,7 +199,9 @@ let collect_bps : pgm -> PathSet.t
 let generate ?(silent=false) : pgm -> PathSet.t
 = fun pgm ->
   if not silent then Profiler.start "[STEP] Generating Paths ... ";
-  let pgm = generate_basic_paths pgm in
+  let cnames = get_cnames pgm in
+  let fmap = FuncMap.mk_fmap pgm in
+  let pgm = generate_basic_paths cnames fmap pgm in
   let paths = collect_bps pgm in
   if not silent then Profiler.finish "[STEP] Generating Paths ... ";
   if not silent then Profiler.print_log ("- #paths : " ^ string_of_int (PathSet.cardinal paths));

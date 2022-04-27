@@ -74,19 +74,20 @@ let rec collect_queries_exp : vformula -> Path.t -> exp -> query list
     let lst = List.rev_append (collect_queries_exp vf path e1) (collect_queries_exp vf path e2) in
     (match bop with
      | Add | Sub | Mul | Exponent when !check_io ->
-       if einfo.eloc < 0 then lst (* do not collect queries from generated test harness *)
+       if einfo.eloc.line < 0 then lst (* do not collect queries from generated test harness or modeled code *)
+       else if BatString.starts_with !Options.solc_ver "0.8" then lst
        else
          let sc = gen_safety_cond exp in
          let sc_src = to_string_exp ~report:true (gen_safety_cond_src exp) in
          let vc = Imply (vf, sc) in
-         {vc=vc; vc2=sc; kind=IO; loc=einfo.eloc; org_q=Org_Exp exp; path=path; src_f=Path.get_fkey path; sc_src=sc_src; attacker_src=""; eth_src=""}::lst
+         {vc=vc; vc2=sc; kind=IO; qloc=einfo.eloc.line; org_q=Org_Exp exp; path=path; src_f=Path.get_fkey path; sc_src=sc_src; attacker_src=""; eth_src=""}::lst
      | Div | Mod when !check_dz ->
-       if einfo.eloc < 0 then lst (* do not collect queries from generated test harness *)
+       if einfo.eloc.line < 0 then lst (* do not collect queries from generated test harness *)
        else
          let sc = gen_safety_cond exp in
          let sc_src = to_string_exp ~report:true (gen_safety_cond_src exp) in
          let vc = Imply (vf, sc) in
-         {vc=vc; vc2=sc; kind=DZ; loc=einfo.eloc; org_q=Org_Exp exp; path=path; src_f=Path.get_fkey path; sc_src=sc_src; attacker_src=""; eth_src=""}::lst
+         {vc=vc; vc2=sc; kind=DZ; qloc=einfo.eloc.line; org_q=Org_Exp exp; path=path; src_f=Path.get_fkey path; sc_src=sc_src; attacker_src=""; eth_src=""}::lst
      | _ -> lst)
   | ETypeName _ -> []
   | _ -> raise (Failure ("collect_queries_exp (tmp expressions encountered) : " ^ to_string_exp exp))
@@ -127,7 +128,13 @@ let collect_queries : vformula -> Path.t -> stmt -> query list
   | Return (Some e,_) -> collect_queries_exp vf path e
   | Throw -> []
   | Assume (e,_) -> collect_queries_exp vf path e
+  | Assert (e,"io",loc) when !check_io -> (* generated from unchecked block *)
+    let sc = convert_bexp e in
+    let sc_src = to_string_exp ~report:true e in
+    let vc = Imply (vf,sc) in
+    [{vc=vc; vc2=sc; kind=IO; qloc=loc.line; org_q=Org_Exp e; path=path; src_f=Path.get_fkey path; sc_src=sc_src; attacker_src=""; eth_src=""}]
+
   | Assert (e,_,loc) -> collect_queries_exp vf path e
   | Assembly _ -> []
-  | Seq _ | If _ | While _ | Break | Continue | PlaceHolder ->
+  | Seq _ | If _ | While _ | Break | Continue | PlaceHolder | Unchecked _ ->
     failwith ("overflow:collect_queries : " ^ to_string_stmt stmt)

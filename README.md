@@ -70,6 +70,9 @@ VeriSmart will attempt to compile the source code with solc binary named `solc`,
 ```
 Note that the default mode is verification mode. You can also explicitly specify verification mode by providing `-mode verify` option.
 
+- Vulnerability types to be analyzed can be specified by their names (e.g., see the above example).
+  * io (integer over/underflow), dz (division-by-zero), assert (assertion violation), leak (ether-leaking), kill (suicidal), re (reentrancy, only verification mode), tx (tx.origin, only verification mode), erc20 (erc20 violation, only exploit mode)
+
 - You can check the full list of availble options by: `./main.native --help`
 
 ## Related Publications

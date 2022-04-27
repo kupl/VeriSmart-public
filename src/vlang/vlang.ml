@@ -19,13 +19,15 @@ type vformula =
   | Imply of vformula * vformula
   | SigmaEqual of var * vexp (* left: mapping, right: uint *)
   | NoOverFlow of var
+  | UntrustSum of var * var (* sum of untrustworthy accounts *)
+  | UntrustSum2 of var * var * var (* invsum, struct, member *)
   | ForAll of var list * vformula
   | Label of int * vformula (* 0: assignment, 1: assume *)
 
 and vexp =
   | VInt of BatBig_int.t
   | VVar of var
-  | Read of vexp * vexp * typ (* A[i] *)
+  | Read of vexp * vexp (* A[i] *)
   | Write of vexp * vexp * vexp (* A[i] := v, return A *)
   | VBinOp of vbop * vexp * vexp * typ
   | VUnOp of vuop * vexp * typ
@@ -65,6 +67,16 @@ let rec compare_vf vf1 vf2 =
     let c = Stdlib.compare x1 x2 in
     if c = 0 then compare_ve e1 e2 else c
   | NoOverFlow x1, NoOverFlow x2 -> Stdlib.compare x1 x2
+  | UntrustSum (x1,x1'), UntrustSum (x2,x2') ->
+    let c = Stdlib.compare x1 x2 in
+    if c = 0 then Stdlib.compare x1' x2' else c
+  | UntrustSum2 (x1,x1',x1''), UntrustSum2 (x2,x2',x2'') ->
+    let c1 = Stdlib.compare x1 x2 in
+    if c1 = 0 then
+      let c2 = Stdlib.compare x1' x2' in
+      if c2 = 0 then Stdlib.compare x1'' x2''
+      else c2
+    else c1
   | ForAll (_,f1), ForAll (_,f2) -> compare_vf f1 f2
   | _ -> Stdlib.compare (tag_of_vf vf1) (tag_of_vf vf2)
 
@@ -74,11 +86,9 @@ and compare_ve ve1 ve2 =
   | VVar (x1,t1),VVar (x2,t2) ->
     let c = BatString.compare x1 x2 in
     if c = 0 then Stdlib.compare t1 t2 else c
-  | Read (e1,e1',t1), Read (e2,e2',t2) ->
+  | Read (e1,e1'), Read (e2,e2') ->
     let c1 = compare_ve e1 e2 in
-    if c1 = 0 then
-      let c2 = compare_ve e1' e2' in
-      if c2 = 0 then Stdlib.compare t1 t2 else c2
+    if c1 = 0 then compare_ve e1' e2'
     else c1
   | Write (e1,e1',e1''), Write (e2,e2',e2'') ->
     let c1 = compare_ve e1 e2 in
@@ -121,8 +131,8 @@ and compare_ve ve1 ve2 =
 
 and tag_of_vf = function 
   | VTrue -> 0 | VFalse -> 1 | VNot _ -> 2 | VAnd _ -> 3 | VOr _ -> 4 | VBinRel _ -> 5
-  | Imply _ -> 6 | SigmaEqual _ -> 7 | NoOverFlow _ -> 8
-  | ForAll _ -> 9 | Label _ -> 10
+  | Imply _ -> 6 | SigmaEqual _ -> 7 | NoOverFlow _ -> 8 | UntrustSum _ -> 9 | UntrustSum2 _ -> 10
+  | ForAll _ -> 11 | Label _ -> 12
 
 and tag_of_brel = function
   | VGeq -> 0 | VGt -> 1 | VEq -> 2
@@ -146,6 +156,7 @@ let equal_ve ve1 ve2 = if compare_ve ve1 ve2 = 0 then true else false
 module FormulaSet = BatSet.Make (struct type t = vformula let compare = compare end)
 module ExpSet = BatSet.Make (struct type t = vexp let compare = compare_ve end)
 
+(* e.g., org ("x(#1)") = "x" *)
 let org : var -> var
 = fun (x,t) -> try (fst (BatString.split x "(#"), t) with Not_found -> (x,t)
 
@@ -164,6 +175,8 @@ let rec to_string_vformula vf =
   | Imply (f1,f2) -> "(" ^ to_string_vformula f1 ^ " -> " ^ to_string_vformula f2 ^ ")"
   | SigmaEqual ((m,t),e) -> "(" ^ "Σ" ^ m ^ " == " ^ to_string_vexp e ^ ")"
   | NoOverFlow (x,t) -> "NoOverFlow (" ^ "Σ" ^ x ^ ")"
+  | UntrustSum ((isum,_),(m,_)) -> isum ^ " >= " ^ "Σ_u " ^ m
+  | UntrustSum2 ((isum,_),(s,_),(mem,_)) -> isum ^ " >= " ^ "Σ_u,i " ^ mem ^ "[" ^ s ^ "[i]" ^ "]"
   | ForAll (vars,f) -> "(" ^ "forAll " ^ string_of_list Vocab.id (List.map fst vars) ^ "." ^ to_string_vformula f ^ ")"
   | Label (_,f) -> to_string_vformula f
 
@@ -171,7 +184,7 @@ and to_string_vexp ve =
   match ve with
   | VInt n -> BatBig_int.to_string n
   | VVar (x,_) -> x
-  | Read (ve1,ve2,_) -> "Read" ^ "(" ^ to_string_vexp ve1 ^ ", " ^ to_string_vexp ve2 ^ ")"
+  | Read (ve1,ve2) -> "Read" ^ "(" ^ to_string_vexp ve1 ^ ", " ^ to_string_vexp ve2 ^ ")"
   | Write (ve1,ve2,ve3) -> "Write" ^ "(" ^ to_string_vexp ve1 ^ ", " ^ to_string_vexp ve2 ^ ", " ^ to_string_vexp ve3 ^ ")" 
   | VBinOp (vbop,ve1,ve2,_) ->
     (match vbop with
@@ -196,19 +209,19 @@ and to_string_vexp ve =
   | Ite (e1,e2,e3) -> "ite" ^ "(" ^ to_string_vexp e1 ^ ", " ^ to_string_vexp e2 ^ ", " ^ to_string_vexp e3 ^ ")"
   | Uninterp (fname,args,typ) -> fname ^ string_of_list ~first:"(" ~sep:", " ~last:")" to_string_vexp args
 
-let rec get_type_vexp : vexp -> typ
+let rec get_typ_vexp : vexp -> typ
 = fun vexp ->
   match vexp with
   | VInt _ -> ConstInt
   | VVar (_,typ) -> typ
-  | Read (_,_,typ) -> typ
-  | Write (ve,_,_) -> get_type_vexp ve
+  | Read (ve,_) -> range_typ (get_typ_vexp ve)
+  | Write (ve,_,_) -> get_typ_vexp ve
   | VBinOp (_,_,_,typ) -> typ
   | VCast (typ,_) -> typ
   | VCond _ -> EType Bool
   | VUnOp (_,_,typ) -> typ
   | Ite (_,e1,e2) ->
-    let t1, t2 = get_type_vexp e1, get_type_vexp e2 in 
+    let t1, t2 = get_typ_vexp e1, get_typ_vexp e2 in 
     let _ = assert (t1 = t2) in
     t1
   | Uninterp (_,_,typ) -> typ
@@ -224,6 +237,8 @@ let rec free_vf : vformula -> var BatSet.t
   | Imply (f1,f2) -> BatSet.union (free_vf f1) (free_vf f2)
   | SigmaEqual (x,e) -> BatSet.union (BatSet.singleton x) (free_ve e)
   | NoOverFlow x -> BatSet.singleton x
+  | UntrustSum (x1,x2) -> BatSet.of_list [x1;x2]
+  | UntrustSum2 (x1,x2,x3) -> BatSet.of_list [x1;x2;x3]
   | ForAll (vars,f) -> BatSet.diff (free_vf f) (BatSet.of_list vars)
   | Label (_,f) -> free_vf f
 
@@ -232,7 +247,7 @@ and free_ve : vexp -> var BatSet.t
   match ve with
   | VInt _ -> BatSet.empty
   | VVar (x,t) -> BatSet.singleton (x,t)
-  | Read (e1,e2,_) -> BatSet.union (free_ve e1) (free_ve e2)
+  | Read (e1,e2) -> BatSet.union (free_ve e1) (free_ve e2)
   | Write (e1,e2,e3) -> BatSet.union (free_ve e1) (BatSet.union (free_ve e2) (free_ve e3)) 
   | VBinOp (_,e1,e2,_) -> BatSet.union (free_ve e1) (free_ve e2) 
   | VCast (_,e) -> free_ve e
@@ -263,7 +278,7 @@ let rec list_of_conjuncts : vformula -> vformula list
   | VBinRel _ -> [vf]
   | Imply _ -> [vf]
   | SigmaEqual _ | NoOverFlow _
-  | ForAll _ -> [vf]
+  | UntrustSum _ | UntrustSum2 _ | ForAll _ -> [vf]
   | Label (_,f) -> list_of_conjuncts f
 
 let rec has_label : vformula -> bool
@@ -277,6 +292,8 @@ let rec has_label : vformula -> bool
   | Imply (f1,f2) -> has_label f1 || has_label f2
   | SigmaEqual _ -> false
   | NoOverFlow _ -> false
+  | UntrustSum _ -> false
+  | UntrustSum2 _ -> false
   | ForAll (_,f) -> has_label f
   | Label _ -> true
 
@@ -296,6 +313,15 @@ let rec rewrite_vf : vformula -> vexp -> vexp -> vformula
   | NoOverFlow (x,t) -> 
     if BatString.equal x (to_string_vexp target) then NoOverFlow (to_string_vexp replacement, t)
     else vformula
+  | UntrustSum ((x,xt),(m,mt)) ->
+    let x' = if BatString.equal x (to_string_vexp target) then to_string_vexp replacement else x in
+    let m' = if BatString.equal m (to_string_vexp target) then to_string_vexp replacement else m in
+    UntrustSum ((x',xt),(m',mt))
+  | UntrustSum2 ((x,xt),(s,st),(mem,memt)) ->
+    let x' = if BatString.equal x (to_string_vexp target) then to_string_vexp replacement else x in
+    let s' = if BatString.equal s (to_string_vexp target) then to_string_vexp replacement else s in
+    let mem' = if BatString.equal mem (to_string_vexp target) then to_string_vexp replacement else mem in
+    UntrustSum2 ((x',xt),(s',st),(mem',memt))
   | ForAll (vars,vf) -> ForAll (vars, rewrite_vf vf target replacement)
   | Label (l,vf) -> Label (l, rewrite_vf vf target replacement)
 
@@ -306,8 +332,8 @@ and rewrite_ve : vexp -> vexp -> vexp -> vexp
   | VVar _ ->
     if equal_ve vexp target then replacement
     else vexp
-  | Read (e1,e2,typ) -> Read (rewrite_ve e1 target replacement, rewrite_ve e2 target replacement, typ) 
-  | Write (e1,e2,e3) -> Write (rewrite_ve e1 target replacement, rewrite_ve e2 target replacement, rewrite_ve e3 target replacement) 
+  | Read (e1,e2) -> Read (rewrite_ve e1 target replacement, rewrite_ve e2 target replacement)
+  | Write (e1,e2,e3) -> Write (rewrite_ve e1 target replacement, rewrite_ve e2 target replacement, rewrite_ve e3 target replacement)
   | VBinOp (vbop,e1,e2,typ) -> VBinOp (vbop, rewrite_ve e1 target replacement, rewrite_ve e2 target replacement, typ)
   | VUnOp (vuop,e,typ) -> VUnOp (vuop, rewrite_ve e target replacement, typ)
   | VCast (typ,e) -> VCast (typ, rewrite_ve e target replacement)
@@ -337,6 +363,12 @@ let rec weaken_vf : vformula -> vid -> vformula
     else vf
   | NoOverFlow (x,_) ->
     if BatString.equal x target then VTrue
+    else vf
+  | UntrustSum ((x1,t1),(x2,t2)) ->
+    if BatString.equal target x1 || BatString.equal target x2 then VTrue
+    else vf
+  | UntrustSum2 ((x1,t1),(x2,t2),(x3,t3)) ->
+    if BatString.equal target x1 || BatString.equal target x2 || BatString.equal target x3 then VTrue
     else vf
   | ForAll (vars,f) -> ForAll (vars, weaken_vf f target)
   | Label (l,f) -> Label (l, weaken_vf f target)
@@ -371,7 +403,10 @@ let this_addr = ("@this", EType Address)
 let length_map = "@L" (* length variable may have different types *)
 let contract_account = ("@CA", EType Address)
 
-let global_ghost_var_names = ["@TU"; "@Invest"; "@B"; "@this"; "@L"; "@CA"]
+let invest_sum = ("@Invest_sum", EType (UInt 256))
+
+let global_ghost_var_names =
+  ["@TU"; "@Invest"; "@Invest_sum"; "@B"; "@this"; "@L"; "@CA"; "@extern_called"]
 
 (* make ghost variable at function entry *)
 let label_var_entry : var -> var
@@ -383,3 +418,4 @@ let label_var_exit : var -> var
 
 let msg_sender = ("msg.sender", EType Address)
 let msg_value = ("msg.value", EType (UInt 256))
+let tx_origin = ("tx.origin", EType Address)

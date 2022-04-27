@@ -8,7 +8,7 @@ let rec eval_ve : vexp -> Mem.t -> Val.t
   match ve with
   | VInt n -> Val.of_itv (Itv (V n, V n))
   | VVar (x,t) -> Mem.find2 (x,t) mem 
-  | Read (e1,e2,_) -> Val.of_itv Itv.top
+  | Read (e1,e2) -> Val.of_itv Itv.top
   | Write (e1,e2,e3) -> Val.of_itv Itv.top
   | VBinOp (bop,e1,e2,t) -> eval_bop bop (eval_ve e1 mem) (eval_ve e2 mem)
   | VUnOp (uop,e,t) -> eval_uop uop (eval_ve e mem)
@@ -61,6 +61,8 @@ let rec eval_vf : vformula -> Mem.t -> Mem.t
   | Imply (f1,f2) -> eval_vf (VOr (VNot f1, f2)) mem
   | SigmaEqual _ -> mem
   | NoOverFlow _ -> mem
+  | UntrustSum _ -> mem
+  | UntrustSum2 _ -> mem
   | ForAll _ -> mem (* may be encountered on testing mode, e.g., removing power op *)
   | Label (l,f) -> eval_vf f mem
 
@@ -78,6 +80,6 @@ and neg_of : vformula -> vformula
      | VGt -> VBinRel (VGeq,e2,e1)
      | VEq -> VOr (VBinRel (VGt,e1,e2), VBinRel (VGt,e2,e1)))
   | Imply (f1,f2) -> VAnd (f1, VNot f2)
-  | SigmaEqual _ | NoOverFlow _ -> raise (Failure "neg_of : itvSem2.ml")
+  | SigmaEqual _ | NoOverFlow _ | UntrustSum _ | UntrustSum2 _ -> raise (Failure "neg_of : itvSem2.ml")
   | ForAll _ -> raise (Failure "neg_of : itvSem2.ml") (* this constructor is only used for exploit generation *)
   | Label (l,f) -> neg_of f

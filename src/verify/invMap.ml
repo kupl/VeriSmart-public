@@ -1,20 +1,29 @@
 open Lang
 open Vlang
-open Itv
-open ItvDom
 open Simplification
 
-type t = (Node.t, vformula) BatMap.t
-and invmap
+type t = (key, vformula) BatMap.t
+and key =
+  | Plain of Node.t
+  | Ctx of Node.t * Node.t (* external call-site as context *)
+
+let to_string_key : key -> string
+= fun k ->
+  match k with
+  | Plain n -> Node.to_string n
+  | Ctx (n1,n2) -> "(" ^ Node.to_string n1 ^ "," ^ Node.to_string n2 ^ ")"
 
 let add = BatMap.add
 let mem = BatMap.mem
-let find x m = try BatMap.find x m with Not_found -> VTrue
-let fold = BatMap.foldi
+let find x m = try BatMap.find x m with Not_found -> assert false
+let foldi = BatMap.foldi
 let map = BatMap.mapi
 let empty = BatMap.empty
 let is_empty= BatMap.is_empty
 let exists = BatMap.exists
+let bindings = BatMap.bindings
+
+let equal m1 m2 = BatMap.equal equal_vf m1 m2
 
 let merge : t -> t -> t
 = fun m1 m2 ->
@@ -34,6 +43,6 @@ let to_string : t -> string
   "[" ^ "\n" ^
   BatMap.foldi (fun k d acc ->
     acc ^
-    Node.to_string k ^ " -> " ^ to_string_vformula d ^ "\n"
+     to_string_key k ^ " -> " ^ to_string_vformula d ^ "\n"
   ) m ""
   ^ "]"

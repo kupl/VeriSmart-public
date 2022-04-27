@@ -4,6 +4,7 @@ open Lang
 open Vocab
 open Global
 open Vlang
+open MakeCfg
 
 let rec eval_aexp : exp -> Mem.t -> Val.t 
 = fun e mem ->
@@ -54,7 +55,7 @@ and eval_bop : bop -> Val.t -> Val.t -> Val.t
 and loc_of : lv -> Loc.t
 = fun lv ->
   match lv with
-  | Var (id,vinfo) -> (id, vinfo.vtype)
+  | Var (id,vinfo) -> (id, vinfo.vtyp)
   | MemberAccess (Cast(EType Address, Lv lv),x,xinfo,_) -> loc_of lv (* address(this).balance *)
   | MemberAccess (Lv lv,x,xinfo,_) -> loc_of lv
   | IndexAccess (Lv lv,_,_) -> loc_of lv
@@ -168,11 +169,29 @@ let eval_stmt : Global.t -> id -> func -> Node.t -> Mem.t -> Mem.t
       update (loc_of lv) (Itv (V zero, V zero), GTaint.bot, BTaint.bot) mem
     else
       update (loc_of lv) (Itv.top, GTaint.bot, BTaint.bot) mem
-  | Call (lvop,e,args,_,_,loc,_) (* built-in functions *)
-    when FuncMap.is_undef e (List.map get_type_exp args) global.fmap ->
+
+  | Call (lvop,e,args,_,_,loc,_) when is_undef_call global.fmap stmt ->
     handle_undefs global ctx_cname (lvop,e,args) loc mem
-  | Call (lvop,e,args,_,_,loc,_) -> (* normal calls *)
-    handle_fcall global func (lvop,e,args) mem
+
+  | Call (lvop,e,args,_,_,loc,_) when is_internal_call global.fmap global.cnames stmt ->
+    let callee = get_callee_of_intcall global func stmt in
+    handle_one_callee callee (lvop,e,args) mem
+    (* handle_fcall global func (lvop,e,args) mem *)
+
+  | Call _ when is_external_call_node node (Lang.get_cfg func) -> mem
+
+  | Call (lvop,e,args,_,_,loc,_) -> (* object call: since it may be abstract function, over-approximate it *)
+    (match lvop with
+     | None -> mem
+     | Some (Tuple (eops,_)) ->
+       List.fold_left (fun acc eop ->
+         match eop with
+         | Some (Lv lv) -> update (loc_of lv) (Itv.top, GTaint.bot, BTaint.bot) acc
+         | None -> acc
+         | _ -> assert false
+       ) mem eops
+     | Some lv -> update (loc_of lv) (Itv.top, GTaint.bot, BTaint.bot) mem)
+
   | Return (None,_) -> mem
   | Return (Some e, line) -> (* ret_params <- e *)
     let ret_params = get_ret_params func in
@@ -200,5 +219,5 @@ let eval_stmt : Global.t -> id -> func -> Node.t -> Mem.t -> Mem.t
       else v 
     ) mem
   | Skip | Throw | Assume _ | Assert _  -> mem
-  | If _ | Seq _ | While _ | Break | Continue | PlaceHolder ->
-    failwith ("itSem:eval_stmt : " ^ to_string_stmt stmt)
+  | If _ | Seq _ | While _ | Break | Continue
+  | PlaceHolder | Unchecked _ -> failwith ("itSem:eval_stmt : " ^ to_string_stmt stmt)
