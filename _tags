@@ -1,1 +1,1 @@
-true: package(batteries), package(str), package(Z3), package(yojson), package(ocamlgraph)
+true: package(batteries), package(str), package(z3), package(yojson), package(ocamlgraph)
