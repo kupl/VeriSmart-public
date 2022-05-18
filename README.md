@@ -88,5 +88,5 @@ For technical details of VeriSmart and SmarTest, please see our papers below.
   [Security 2021: 30th USENIX Security Symposium](https://www.usenix.org/conference/usenixsecurity21) <br/>
   \[[paper](http://prl.korea.ac.kr/~ssb920/papers/sec21.pdf)\]
 
-## Contact
-[Sunbeom So](https://sites.google.com/site/sunbeomsoprl/): sunbeom_so@korea.ac.kr
+## Questions
+If you have any questions, please submit issues in this repository, or send an email to sunbeom_so@korea.ac.kr.
