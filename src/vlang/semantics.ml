@@ -474,7 +474,9 @@ let convert_stmt : Global.t -> func -> Node.t -> vformula * query list -> vformu
     handle_undefs global (lvop,e,args) (ethop,gasop) loc (vf,qs)
 
   | Call (lvop,e,args,ethop,gasop,loc,_) when is_internal_call global.fmap global.cnames stmt -> assert false
-  | Call _ when MakeCfg.is_external_call_node node (Lang.get_cfg curf) -> assert false
+  | Call _ when MakeCfg.is_external_call_node node (Lang.get_cfg curf) ->
+    if !Options.mode = "exploit" then (VFalse, qs)
+    else assert false
 
   | Call (lvop,e,args,ethop,gasop,loc,_) -> (* external calls *)
     if !Options.mode="exploit" && not !check_re then (VFalse, qs)
