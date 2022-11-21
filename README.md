@@ -89,4 +89,4 @@ For technical details of VeriSmart and SmarTest, please see our papers below.
   \[[paper](http://prl.korea.ac.kr/~ssb920/papers/sec21.pdf)\]
 
 ## Questions
-If you have any questions, please submit issues in this repository, or send an email to sunbeom_so@korea.ac.kr.
+If you have any questions, please submit issues in this repository, including a source code of your input Solidty contract (if relevant) and a command that can reproduce your problem.
