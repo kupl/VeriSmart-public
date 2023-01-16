@@ -41,6 +41,7 @@ let ngram = ref 0
 let validate = ref false
 let infinite_ether = ref false
 let contract_init_eth = ref BatBig_int.zero
+let enforce_init_eth = ref false
 let refined_vcgen = ref false
 
 let outdir = ref ""
@@ -118,6 +119,7 @@ let options =
     ("-contract_init_eth", Arg.Int (fun n -> assert (n>0);
                            contract_init_eth := BatBig_int.mul (BatBig_int.of_int n) (BatBig_int.pow (BatBig_int.of_int 10) (BatBig_int.of_int 18))),
                            "the amount of Ethers given to a contract to be analyzed (default: 0 ether)");
+    ("-enforce_init_eth", Arg.Set enforce_init_eth, "do not modify contract ether values (default: false)");
     ("-refined_vcgen", Arg.Set refined_vcgen, "generate vcs that consider normal terminations of transactions.");
     ("-outdir", Arg.String (fun s -> outdir:= s), "directory where analysis outputs are stored");
   ]
