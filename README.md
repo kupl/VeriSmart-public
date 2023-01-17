@@ -2,7 +2,7 @@
 VeriSmart is a safety analyzer for Solidity smart contracts. Currently, VeriSmart supports two types of analysis modes.
 - Safety verification (**VeriSmart**, [S&P '20](https://arxiv.org/abs/1908.11227))
 
-In this mode, VeriSmart can be used to prove the absence of bugs or detect bugs. The key feature in this mode is, VeriSmart automatically infers transcation invariants, which are conditions that hold under arbitrary interleaving of transcations, of smart contracts. With this ability, VeriSmart can precisely analyze safety properties (e.g., no integer overflows) in smart contracts.
+In this mode, VeriSmart can be used to prove the absence of bugs or detect bugs. The key feature in this mode is, VeriSmart automatically infers transaction invariants, which are conditions that hold under arbitrary interleaving of transactions, of smart contracts. With this ability, VeriSmart can precisely analyze safety properties (e.g., no integer overflows) in smart contracts.
 
 - Vulnerable transaction sequence generation (**SmarTest**, [Security '21](http://prl.korea.ac.kr/~ssb920/papers/sec21.pdf))
 
@@ -64,7 +64,7 @@ where the solc binary named `solc_0.5.11` should be located at the path identifi
 If the `-solc` option is not explicitly provided,
 VeriSmart will attempt to compile the source code with solc binary named `solc`, located at the path identified by `which solc`.
 
-- To run SmarTest (vulnerable sequence geeneration mode), specify the mode with `-mode`.
+- To run SmarTest (vulnerable sequence generation mode), specify the mode with `-mode`.
 ```
 ./main.native -input examples/leak_unsafe.sol -mode exploit -exploit_timeout 10 leak
 ```
@@ -73,7 +73,7 @@ Note that the default mode is verification mode. You can also explicitly specify
 - Vulnerability types to be analyzed can be specified by their names (e.g., see the above example).
   * io (integer over/underflow), dz (division-by-zero), assert (assertion violation), leak (ether-leaking), kill (suicidal), re (reentrancy, only verification mode), tx (tx.origin, only verification mode), erc20 (erc20 violation, only exploit mode)
 
-- You can check the full list of availble options by: `./main.native --help`
+- You can check the full list of available options by: `./main.native --help`
 
 ## Related Publications
 For technical details of VeriSmart and SmarTest, please see our papers below.
@@ -89,4 +89,4 @@ For technical details of VeriSmart and SmarTest, please see our papers below.
   \[[paper](http://prl.korea.ac.kr/~ssb920/papers/sec21.pdf)\]
 
 ## Questions
-If you have any questions, please submit issues in this repository, including a source code of your input Solidty contract (if relevant) and a command that can reproduce your problem.
+If you have any questions, please submit issues in this repository, including a source code of your input Solidity contract (if relevant) and a command that can reproduce your problem.
