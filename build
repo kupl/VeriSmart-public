@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 TARGET=main.native
 INCLUDE_DIRS=src/frontend,src/pre,src/pre/interval,src/verify,src/vlang,src/util,src/checker,src/exploit
